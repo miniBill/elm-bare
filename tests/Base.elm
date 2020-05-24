@@ -17,10 +17,12 @@ suite =
         , describe "Containers" containersTests
         , describe "Object" objectTests
         , describe "Custom" customTests
-        , describe "bimap" bimapTests
-
-        --, describe "andThen" andThenTests
-        , describe "lazy" lazyTests
+        , roundtrips "bimap" Fuzz.float <|
+            Codec.map
+                (\x -> x * 2)
+                (\x -> x / 2)
+                Codec.float64
+        , roundtrips "lazy" peanoFuzz peanoCodec
         , describe "maybe" maybeTests
         , describe "constant"
             [ test "roundtrips"
@@ -34,9 +36,9 @@ suite =
         ]
 
 
-roundtrips : Fuzzer a -> Codec a -> Test
-roundtrips fuzzer codec =
-    fuzz fuzzer "is a roundtrip" <|
+roundtrips : String -> Fuzzer a -> Codec a -> Test
+roundtrips name fuzzer codec =
+    fuzz fuzzer name <|
         \value ->
             value
                 |> Codec.encodeToValue codec
@@ -44,9 +46,9 @@ roundtrips fuzzer codec =
                 |> Expect.equal (Just value)
 
 
-roundtripsWithin : Fuzzer Float -> Codec Float -> Test
-roundtripsWithin fuzzer codec =
-    fuzz fuzzer "is a roundtrip" <|
+roundtripsWithin : String -> Fuzzer Float -> Codec Float -> Test
+roundtripsWithin name fuzzer codec =
+    fuzz fuzzer name <|
         \value ->
             value
                 |> Codec.encodeToValue codec
@@ -57,30 +59,15 @@ roundtripsWithin fuzzer codec =
 
 basicTests : List Test
 basicTests =
-    [ describe "Codec.string"
-        [ roundtrips Fuzz.string Codec.string
-        ]
-    , describe "Codec.signedInt"
-        [ roundtrips signedInt32Fuzz Codec.signedInt
-        ]
-    , describe "Codec.unsignedInt"
-        [ roundtrips unsignedInt32Fuzz Codec.unsignedInt
-        ]
-    , describe "Codec.float64"
-        [ roundtrips Fuzz.float Codec.float64
-        ]
-    , describe "Codec.float32"
-        [ roundtripsWithin Fuzz.float Codec.float32
-        ]
-    , describe "Codec.bool"
-        [ roundtrips Fuzz.bool Codec.bool
-        ]
-    , describe "Codec.char"
-        [ roundtrips Fuzz.char Codec.char
-        ]
-    , describe "Codec.bytes"
-        [ roundtrips fuzzBytes Codec.bytes
-        ]
+    [ roundtrips "Codec.string" Fuzz.string Codec.string
+    , roundtrips "Codec.string with unicode chars" (Fuzz.constant "Ⓐ弈😀") Codec.string
+    , roundtrips "Codec.signedInt" signedInt32Fuzz Codec.signedInt
+    , roundtrips "Codec.unsignedInt" unsignedInt32Fuzz Codec.unsignedInt
+    , roundtrips "Codec.float64" Fuzz.float Codec.float64
+    , roundtripsWithin "Codec.float32" Fuzz.float Codec.float32
+    , roundtrips "Codec.bool" Fuzz.bool Codec.bool
+    , roundtrips "Codec.char" Fuzz.char Codec.char
+    , roundtrips "Codec.bytes" fuzzBytes Codec.bytes
     ]
 
 
@@ -91,30 +78,20 @@ fuzzBytes =
 
 containersTests : List Test
 containersTests =
-    [ describe "Codec.array"
-        [ roundtrips (Fuzz.array signedInt32Fuzz) (Codec.array Codec.signedInt)
-        ]
-    , describe "Codec.list"
-        [ roundtrips (Fuzz.list signedInt32Fuzz) (Codec.list Codec.signedInt)
-        ]
-    , describe "Codec.dict"
-        [ roundtrips
-            (Fuzz.map2 Tuple.pair Fuzz.string signedInt32Fuzz
-                |> Fuzz.list
-                |> Fuzz.map Dict.fromList
-            )
-            (Codec.dict Codec.string Codec.signedInt)
-        ]
-    , describe "Codec.set"
-        [ roundtrips
-            (Fuzz.list signedInt32Fuzz |> Fuzz.map Set.fromList)
-            (Codec.set Codec.signedInt)
-        ]
-    , describe "Codec.tuple"
-        [ roundtrips
-            (Fuzz.tuple ( signedInt32Fuzz, signedInt32Fuzz ))
-            (Codec.tuple Codec.signedInt Codec.signedInt)
-        ]
+    [ roundtrips "Codec.array" (Fuzz.array signedInt32Fuzz) (Codec.array Codec.signedInt)
+    , roundtrips "Codec.list" (Fuzz.list signedInt32Fuzz) (Codec.list Codec.signedInt)
+    , roundtrips "Codec.dict"
+        (Fuzz.map2 Tuple.pair Fuzz.string signedInt32Fuzz
+            |> Fuzz.list
+            |> Fuzz.map Dict.fromList
+        )
+        (Codec.dict Codec.string Codec.signedInt)
+    , roundtrips "Codec.set"
+        (Fuzz.list signedInt32Fuzz |> Fuzz.map Set.fromList)
+        (Codec.set Codec.signedInt)
+    , roundtrips "Codec.tuple"
+        (Fuzz.tuple ( signedInt32Fuzz, signedInt32Fuzz ))
+        (Codec.tuple Codec.signedInt Codec.signedInt)
     ]
 
 
@@ -128,41 +105,37 @@ signedInt32Fuzz =
 
 objectTests : List Test
 objectTests =
-    [ describe "with 0 fields"
-        [ roundtrips (Fuzz.constant {})
-            (Codec.object {}
-                |> Codec.buildObject
+    [ roundtrips "with 0 fields"
+        (Fuzz.constant {})
+        (Codec.object {}
+            |> Codec.buildObject
+        )
+    , roundtrips "with 1 field"
+        (Fuzz.map (\i -> { fname = i }) signedInt32Fuzz)
+        (Codec.object (\i -> { fname = i })
+            |> Codec.field .fname Codec.signedInt
+            |> Codec.buildObject
+        )
+    , roundtrips "with 2 fields"
+        (Fuzz.map2
+            (\a b ->
+                { a = a
+                , b = b
+                }
             )
-        ]
-    , describe "with 1 field"
-        [ roundtrips (Fuzz.map (\i -> { fname = i }) signedInt32Fuzz)
-            (Codec.object (\i -> { fname = i })
-                |> Codec.field .fname Codec.signedInt
-                |> Codec.buildObject
+            signedInt32Fuzz
+            signedInt32Fuzz
+        )
+        (Codec.object
+            (\a b ->
+                { a = a
+                , b = b
+                }
             )
-        ]
-    , describe "with 2 fields"
-        [ roundtrips
-            (Fuzz.map2
-                (\a b ->
-                    { a = a
-                    , b = b
-                    }
-                )
-                signedInt32Fuzz
-                signedInt32Fuzz
-            )
-            (Codec.object
-                (\a b ->
-                    { a = a
-                    , b = b
-                    }
-                )
-                |> Codec.field .a Codec.signedInt
-                |> Codec.field .b Codec.signedInt
-                |> Codec.buildObject
-            )
-        ]
+            |> Codec.field .a Codec.signedInt
+            |> Codec.field .b Codec.signedInt
+            |> Codec.buildObject
+        )
     ]
 
 
@@ -176,55 +149,51 @@ type Newtype6 a b c d e f
 
 customTests : List Test
 customTests =
-    [ describe "with 1 ctor, 0 args"
-        [ roundtrips (Fuzz.constant ())
-            (Codec.custom
-                (\f v ->
-                    case v of
-                        () ->
-                            f
-                )
-                |> Codec.variant0 0 ()
-                |> Codec.buildCustom
+    [ roundtrips "with 1 ctor, 0 args"
+        (Fuzz.constant ())
+        (Codec.custom
+            (\f v ->
+                case v of
+                    () ->
+                        f
             )
-        ]
-    , describe "with 1 ctor, 1 arg"
-        [ roundtrips (Fuzz.map Newtype signedInt32Fuzz)
-            (Codec.custom
-                (\f v ->
-                    case v of
-                        Newtype a ->
-                            f a
-                )
-                |> Codec.variant1 1 Newtype Codec.signedInt
-                |> Codec.buildCustom
+            |> Codec.variant0 0 ()
+            |> Codec.buildCustom
+        )
+    , roundtrips "with 1 ctor, 1 arg"
+        (Fuzz.map Newtype signedInt32Fuzz)
+        (Codec.custom
+            (\f v ->
+                case v of
+                    Newtype a ->
+                        f a
             )
-        ]
-    , describe "with 1 ctor, 1 arg, different id codec"
-        [ roundtrips (Fuzz.map Newtype signedInt32Fuzz)
-            (Codec.customWithIdCodec Codec.unsignedInt8
-                (\f v ->
-                    case v of
-                        Newtype a ->
-                            f a
-                )
-                |> Codec.variant1 1 Newtype Codec.signedInt
-                |> Codec.buildCustom
+            |> Codec.variant1 1 Newtype Codec.signedInt
+            |> Codec.buildCustom
+        )
+    , roundtrips "with 1 ctor, 1 arg, different id codec"
+        (Fuzz.map Newtype signedInt32Fuzz)
+        (Codec.customWithIdCodec Codec.unsignedInt8
+            (\f v ->
+                case v of
+                    Newtype a ->
+                        f a
             )
-        ]
-    , describe "with 1 ctor, 6 arg"
-        [ roundtrips (Fuzz.map5 (Newtype6 0) signedInt32Fuzz signedInt32Fuzz signedInt32Fuzz signedInt32Fuzz signedInt32Fuzz)
-            (Codec.custom
-                (\function v ->
-                    case v of
-                        Newtype6 a b c d e f ->
-                            function a b c d e f
-                )
-                |> Codec.variant6 1 Newtype6 Codec.signedInt Codec.signedInt Codec.signedInt Codec.signedInt Codec.signedInt Codec.signedInt
-                |> Codec.buildCustom
+            |> Codec.variant1 1 Newtype Codec.signedInt
+            |> Codec.buildCustom
+        )
+    , roundtrips "with 1 ctor, 6 arg"
+        (Fuzz.map5 (Newtype6 0) signedInt32Fuzz signedInt32Fuzz signedInt32Fuzz signedInt32Fuzz signedInt32Fuzz)
+        (Codec.custom
+            (\function v ->
+                case v of
+                    Newtype6 a b c d e f ->
+                        function a b c d e f
             )
-        ]
-    , describe "with 2 ctors, 0,1 args" <|
+            |> Codec.variant6 1 Newtype6 Codec.signedInt Codec.signedInt Codec.signedInt Codec.signedInt Codec.signedInt Codec.signedInt
+            |> Codec.buildCustom
+        )
+    , describe "misc" <|
         let
             match fnothing fjust value =
                 case value of
@@ -250,18 +219,8 @@ customTests =
             |> List.map
                 (\( name, fuzz ) ->
                     describe name
-                        [ roundtrips fuzz codec ]
+                        [ roundtrips "with 2 ctors, 0,1 args" fuzz codec ]
                 )
-    ]
-
-
-bimapTests : List Test
-bimapTests =
-    [ roundtrips Fuzz.float <|
-        Codec.map
-            (\x -> x * 2)
-            (\x -> x / 2)
-            Codec.float64
     ]
 
 
@@ -298,12 +257,6 @@ peanoCodec =
     Codec.maybe (Codec.lazy (\() -> peanoCodec)) |> Codec.map Peano (\(Peano a) -> a)
 
 
-lazyTests : List Test
-lazyTests =
-    [ roundtrips peanoFuzz peanoCodec
-    ]
-
-
 peanoFuzz : Fuzzer Peano
 peanoFuzz =
     Fuzz.intRange 0 10 |> Fuzz.map (intToPeano Nothing)
@@ -320,37 +273,34 @@ intToPeano peano value =
 
 maybeTests : List Test
 maybeTests =
-    [ describe "single"
-        [ roundtrips
-            (Fuzz.oneOf
-                [ Fuzz.constant Nothing
-                , Fuzz.map Just signedInt32Fuzz
-                ]
-            )
-          <|
-            Codec.maybe Codec.signedInt
-        ]
+    [ roundtrips
+        "single"
+        (Fuzz.oneOf
+            [ Fuzz.constant Nothing
+            , Fuzz.map Just signedInt32Fuzz
+            ]
+        )
+      <|
+        Codec.maybe Codec.signedInt
     ]
 
 
 recursiveTests : List Test
 recursiveTests =
-    [ describe "list"
-        [ roundtrips (Fuzz.list signedInt32Fuzz) <|
-            Codec.recursive
-                (\c ->
-                    Codec.custom
-                        (\fempty fcons value ->
-                            case value of
-                                [] ->
-                                    fempty
+    [ roundtrips "list" (Fuzz.list signedInt32Fuzz) <|
+        Codec.recursive
+            (\c ->
+                Codec.custom
+                    (\fempty fcons value ->
+                        case value of
+                            [] ->
+                                fempty
 
-                                x :: xs ->
-                                    fcons x xs
-                        )
-                        |> Codec.variant0 0 []
-                        |> Codec.variant2 1 (::) Codec.signedInt c
-                        |> Codec.buildCustom
-                )
-        ]
+                            x :: xs ->
+                                fcons x xs
+                    )
+                    |> Codec.variant0 0 []
+                    |> Codec.variant2 1 (::) Codec.signedInt c
+                    |> Codec.buildCustom
+            )
     ]

@@ -17,9 +17,9 @@ suite =
         ]
 
 
-compatible : Fuzzer a -> (a -> b) -> Codec a -> Codec b -> Test
-compatible fuzzer map oldCodec newCodec =
-    fuzz fuzzer "compatible" <|
+compatible : String -> Fuzzer a -> (a -> b) -> Codec a -> Codec b -> Test
+compatible name fuzzer map oldCodec newCodec =
+    fuzz fuzzer name <|
         \value ->
             value
                 |> Codec.encodeToValue oldCodec
@@ -30,15 +30,9 @@ compatible fuzzer map oldCodec newCodec =
 forward : Fuzzer old -> (old -> new) -> Codec old -> Codec new -> Test
 forward fuzzer map oldCodec newCodec =
     describe "forward"
-        [ describe "old"
-            [ Base.roundtrips fuzzer oldCodec
-            ]
-        , describe "new"
-            [ Base.roundtrips (Fuzz.map map fuzzer) newCodec
-            ]
-        , describe "old value with new codec"
-            [ compatible fuzzer map oldCodec newCodec
-            ]
+        [ Base.roundtrips "old" fuzzer oldCodec
+        , Base.roundtrips "new" (Fuzz.map map fuzzer) newCodec
+        , compatible "old value with new codec" fuzzer map oldCodec newCodec
         ]
 
 
@@ -51,18 +45,10 @@ both :
     -> Codec new
     -> List Test
 both oldFuzzer oldToNew oldCodec newFuzzer newToOld newCodec =
-    [ describe "old"
-        [ Base.roundtrips oldFuzzer oldCodec
-        ]
-    , describe "new"
-        [ Base.roundtrips newFuzzer newCodec
-        ]
-    , describe "old value with new codec"
-        [ compatible oldFuzzer oldToNew oldCodec newCodec
-        ]
-    , describe "new value with old codec"
-        [ compatible newFuzzer newToOld newCodec oldCodec
-        ]
+    [ Base.roundtrips "old" oldFuzzer oldCodec
+    , Base.roundtrips "new" newFuzzer newCodec
+    , compatible "old value with new codec" oldFuzzer oldToNew oldCodec newCodec
+    , compatible "new value with old codec" newFuzzer newToOld newCodec oldCodec
     ]
 
 

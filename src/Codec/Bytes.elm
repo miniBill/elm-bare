@@ -173,7 +173,7 @@ string =
     build
         (\text ->
             BE.sequence
-                [ BE.unsignedInt32 endian (String.length text)
+                [ BE.unsignedInt32 endian (BE.getStringWidth text)
                 , BE.string text
                 ]
         )
