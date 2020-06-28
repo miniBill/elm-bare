@@ -22,6 +22,7 @@ suite =
                 (\x -> x * 2)
                 (\x -> x / 2)
                 Codec.float64
+        , describe "andThen" andThenTests
         , roundtrips "lazy" peanoFuzz peanoCodec
 
         -- This test is expected to fail. Unfortunately it's very difficult to make lazy and recursive stack safe.
@@ -240,26 +241,25 @@ customTests =
     ]
 
 
+volumeCodec =
+    Codec.float64
+        |> Codec.andThen
+            (\volume ->
+                if volume <= 1 && volume >= 0 then
+                    Just volume
 
---volumeCodec =
---    Codec.float64
---        |> Codec.andThen
---            (\volume ->
---                if volume <= 1 && volume >= 0 then
---                    Just volume
---
---                else
---                    Nothing
---            )
---            (\volume -> volume)
---
---
---andThenTests : List Test
---andThenTests =
---    [ roundtrips (Fuzz.floatRange 0 1) <| volumeCodec
---    , test "andThen fails on invalid binary data." <|
---        \_ -> 5 |> Codec.encodeToValue volumeCodec |> Codec.decodeValue volumeCodec |> Expect.equal Nothing
---    ]
+                else
+                    Nothing
+            )
+            (\volume -> volume)
+
+
+andThenTests : List Test
+andThenTests =
+    [ roundtrips "roundtrips" (Fuzz.floatRange 0 1) volumeCodec
+    , test "andThen fails on invalid binary data." <|
+        \_ -> 5 |> Codec.encodeToValue volumeCodec |> Codec.decodeValue volumeCodec |> Expect.equal Nothing
+    ]
 
 
 type Peano

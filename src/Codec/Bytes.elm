@@ -6,7 +6,7 @@ module Codec.Bytes exposing
     , maybe, list, array, dict, set, tuple, triple, result
     , ObjectCodec, object, field, buildObject
     , CustomCodec, custom, variant0, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, buildCustom
-    , map
+    , map, andThen
     , constant, lazy, recursive, customWithIdCodec
     )
 
@@ -50,7 +50,7 @@ module Codec.Bytes exposing
 
 # Mapping
 
-@docs map
+@docs map, andThen
 
 
 # Fancy Codecs
@@ -899,6 +899,9 @@ map fromBytes toBytes codec =
                         Nothing
                 )
                 (\volume -> volume)
+
+Note that this function is a bit risky.
+If you encode data that fails to decode, you won't get any indication as to what happened.
 
 -}
 andThen : (a -> Maybe b) -> (b -> a) -> Codec a -> Codec b
