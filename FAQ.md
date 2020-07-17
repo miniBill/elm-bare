@@ -1,10 +1,3 @@
-## What's different between this and miniBill/elm-codec?
-Besides the fact that this package is designed for `elm/bytes` instead of `elm/json` other notable differences are:
-* `variantX` functions use `Int` instead of `String` for telling apart different constructors
-* `CustomObject` fields aren't given names and their order matters 
-* There is no `oneOf`, `optionalField`, `andThen`, or `build` functions
-* There are more ways to encode elm `int` and `float` values (i.e. `signedInt`, `unsignedInt`, `float32`, `float64`)
-
 ## How do you use `recursive`?
 The trick to understanding the `recursive` codec is: pretend you are already done.
 When the function you pass to `recursive` is called the argument is the finished `Codec`.
@@ -12,7 +5,7 @@ When the function you pass to `recursive` is called the argument is the finished
 An example may be worth a thousand words:
 
 ```elm
-import Codec.Bytes as Codec exposing (Codec)
+import Codec.Bare as Codec exposing (Codec)
 
 type Peano
     = Peano (Maybe Peano)
@@ -41,7 +34,7 @@ You end with a call to `buildCustom`.
 An example:
 
 ```elm
-import Codec.Bytes as Codec exposing (Codec)
+import Codec.Bare as Codec exposing (Codec)
 
 type Semaphore
     = Red Int String Bool
@@ -71,7 +64,7 @@ semaphoreCodec =
 A second example combining `recursive` and `custom`:
 
 ```elm
-import Codec.Bytes as Codec exposing (Codec)
+import Codec.Bare as Codec exposing (Codec)
 
 type Tree a
     = Node (List (Tree a))
@@ -104,7 +97,7 @@ Then you can write a `custom` Codec for those possible versions and use `map` to
 
 An example:
 ```elm
-import Codec.Bytes as Codec exposing (Codec)
+import Codec.Bare as Codec exposing (Codec)
 
 {-| The gps coordinate we use internally in our application
 -}

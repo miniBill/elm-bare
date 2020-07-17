@@ -1,21 +1,53 @@
-module Codec.Bytes exposing
-    ( Codec, Endianness, Encoder, Bytes
+module Codec.Bare exposing
+    ( Codec, Encoder, Bytes
     , Decoder, decoder, decodeValue
     , encoder, encodeToValue
-    , string, bool, char, signedInt, unsignedInt, float64, float32, signedInt32, unsignedInt32, signedInt16, unsignedInt16, signedInt8, unsignedInt8, bytes
-    , maybe, list, array, dict, set, tuple, triple, result
-    , ObjectCodec, object, field, buildObject
+    , uint, int
+    , u8, u16, u32, u64
+    , i8, i16, i32, i64
+    , f32, f64
+    , enum
+    , string
+    , fixedLengthData, bytes, data
+    , void
+    , maybe
+    , fixedLengthList, list
+    , fixedLengthArray, array
+    , fixedLengthSet, set
+    , dict
     , CustomCodec, custom, variant0, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, buildCustom
-    , map
-    , constant, lazy, recursive, customWithIdCodec
+    , ObjectCodec, object, field, buildObject
+    , map, andThen
+    , lazy, recursive
+    , buildStruct, buildTaggedUnion, char, constant, customWithIdCodec, float32, float64, optional, result, signedInt, signedInt16, signedInt32, signedInt8, stringbool, struct, taggedUnion, triple, tuple, unsignedInt, unsignedInt16, unsignedInt32, unsignedInt8
     )
 
 {-| A `Codec a` contains a `Bytes.Decoder a` and the corresponding `a -> Bytes.Encoder`.
 
+This module is an implementation of the BARE format.
+The types are fully compatible with `Codec.Bytes`, but if you want to ensure interoperability with other BARE implementation
+you should use only functions from this module.
+
+The names of the functions correspond, as far as possible, to the ones in the original specification.
+For some functions synonyms more familiar for Elm users are provided.
+
+Most of the following documentation is taken from
+[the original specification (CC-BY-SA)](https://git.sr.ht/~sircmpwn/bare),
+and while the code is licensed with a MIT license, this documentation is CC-BY-SA itself.
+
+Binary Application Record Encoding (BARE) is, as the name implies, a simple
+binary representation for structured application data.
+
+BARE messages omit type information, and are not self-describing. The structure
+of a message must be established out of band, generally by prior agreement and
+context - for example, if a BARE message is returned from /api/user/info, it
+can be inferred from context that the message represents user information, and
+the structure of such messages is available in the documentation for this API.
+
 
 # Definition
 
-@docs Codec, Endianness, Encoder, Bytes
+@docs Codec, Encoder, Bytes
 
 
 # Decode
@@ -28,38 +60,43 @@ module Codec.Bytes exposing
 @docs encoder, encodeToValue
 
 
-# Primitives
+# Built-in Types
 
-@docs string, bool, char, signedInt, unsignedInt, float64, float32, signedInt32, unsignedInt32, signedInt16, unsignedInt16, signedInt8, unsignedInt8, bytes
-
-
-# Data Structures
-
-@docs maybe, list, array, dict, set, tuple, triple, result
-
-
-# Object Primitives
-
-@docs ObjectCodec, object, field, buildObject
+@docs uint, int
+@docs u8, u16, u32, u64
+@docs i8, i16, i32, i64
+@docs f32, f64
+@docs bool
+@docs enum
+@docs string
+@docs fixedLengthData, bytes, data
+@docs void
 
 
-# Custom Types
+# Aggregate types
 
+@docs maybe
+@docs fixedLengthList, list
+@docs fixedLengthArray, array
+@docs fixedLengthSet, set
+@docs dict
 @docs CustomCodec, custom, variant0, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, buildCustom
+@docs ObjectCodec, object, field, buildObject
 
 
 # Mapping
 
-@docs map
+@docs map, andThen
 
 
 # Fancy Codecs
 
-@docs constant, lazy, recursive, customWithIdCodec
+@docs lazy, recursive
 
 -}
 
 import Array exposing (Array)
+import Bitwise
 import Bytes
 import Bytes.Decode as BD
 import Bytes.Encode as BE
@@ -86,15 +123,6 @@ type alias Encoder =
     BE.Encoder
 
 
-{-| The direction bytes are ordered in memory. Refer to the [elm/bytes docs][endianness] for more information.
-
-[endianness]: https://package.elm-lang.org/packages/elm/bytes/latest/Bytes#Endianness
-
--}
-type alias Endianness =
-    Bytes.Endianness
-
-
 {-| A sequence of bytes. Refer to the [elm/bytes docs][bytes] for more information.
 
 [bytes]: https://package.elm-lang.org/packages/elm/bytes/latest/Bytes#Bytes
@@ -114,23 +142,18 @@ type alias Decoder a =
     BD.Decoder a
 
 
-endian : Endianness
-endian =
-    Bytes.BE
-
-
 {-| Extracts the `Decoder` contained inside the `Codec`.
 -}
 decoder : Codec a -> Decoder a
-decoder (Codec m) =
-    m.decoder
+decoder =
+    CB.decoder
 
 
 {-| Run a `Codec` to turn a sequence of bytes into an Elm value.
 -}
 decodeValue : Codec a -> Bytes -> Maybe a
-decodeValue codec =
-    BD.decode (decoder codec)
+decodeValue =
+    CB.decodeValue
 
 
 
@@ -140,44 +163,154 @@ decodeValue codec =
 {-| Extracts the encoding function contained inside the `Codec`.
 -}
 encoder : Codec a -> a -> Encoder
-encoder (Codec m) =
-    m.encoder
+encoder =
+    CB.encoder
 
 
 {-| Convert an Elm value into a sequence of bytes.
 -}
 encodeToValue : Codec a -> a -> Bytes
-encodeToValue codec value =
-    encoder codec value |> BE.encode
+encodeToValue =
+    CB.encodeToValue
 
 
 
--- BASE
+--Built-in Types
 
 
-{-| If necessary you can create your own `Codec` directly.
-This should be a measure of last resort though! If you need to encode and decode records and custom types, use `object` and `custom` respectively.
+{-| `Codec` between an unsigned variable-length integer and an Elm `Int`.
+
+A variable-length integer. Each octet of the encoded value has
+the most-significant bit set, except for the last octet. The
+remaining bits are the integer value in 7-bit groups,
+least-significant first.
+
+The maximum precision of a varint is 56 bit (64 bit in the original spec,
+but Elm `Int`s start to become unreliable after 56 bits).
+
 -}
-build : (a -> Encoder) -> Decoder a -> Codec a
-build encoder_ decoder_ =
-    Codec
-        { encoder = encoder_
-        , decoder = decoder_
-        }
+uint : Codec Int
+uint =
+    build uintEncoder uintDecoder
 
 
-{-| `Codec` between a sequence of bytes and an Elm `String`
+uintEncoder : Int -> Encoder
+uintEncoder =
+    let
+        toList i =
+            if i < 128 then
+                [ i ]
+
+            else
+                (128 + modBy 128 i) :: (toList <| i // 128)
+    in
+    BE.sequence << List.map BE.unsignedInt8 << toList
+
+
+uintDecoder : Decoder Int
+uintDecoder =
+    BD.unsignedInt8
+        |> BD.andThen
+            (\h ->
+                if h < 128 then
+                    BD.succeed h
+
+                else
+                    BD.map (\ti -> (h - 128) + 128 * ti) uintDecoder
+            )
+
+
+{-| `Codec` between a signed variable-length integer and an Elm `Int`.
+
+A variable-length integer. Each octet of the encoded value has
+the most-significant bit set, except for the last octet. The
+remaining bits are the integer value in 7-bit groups,
+least-significant first.
+
+Signed integers are mapped to unsigned integers using "zig-zag"
+encoding: positive values x are written as `2 * x + 0`, negative
+values are written as `2 * (~x) + 1`; that is, negative numbers are
+complemented and whether to complement is encoded in bit 0.
+
+The maximum precision of a varint is 56 bit (64 bit in the original spec,
+but Elm `Int`s start to become unreliable after 56 bits).
+
 -}
-string : Codec String
-string =
-    build
-        (\text ->
-            BE.sequence
-                [ BE.unsignedInt32 endian (BE.getStringWidth text)
-                , BE.string text
-                ]
+int : Codec Int
+int =
+    map
+        (\u ->
+            if modBy 2 u == 1 then
+                Bitwise.complement <| u // 2
+
+            else
+                u // 2
         )
-        (BD.unsignedInt32 endian |> BD.andThen (\charCount -> BD.string charCount))
+        (\s ->
+            if s < 0 then
+                Bitwise.complement s * 2 + 1
+
+            else
+                s * 2
+        )
+        uint
+
+
+{-| `Codec` between an unsigned 8-bit integer and an Elm `Int`
+-}
+u8 : Codec Int
+u8 =
+    CB.unsignedInt8
+
+
+{-| `Codec` between an unsigned 16-bit integer and an Elm `Int`
+-}
+u16 : Codec Int
+u16 =
+    build (BE.unsignedInt16 Bytes.LE) (BD.unsignedInt16 Bytes.LE)
+
+
+{-| `Codec` between an unsigned 32-bit integer and an Elm `Int`
+-}
+u32 : Codec Int
+u32 =
+    build (BE.unsignedInt32 Bytes.LE) (BD.unsignedInt32 Bytes.LE)
+
+
+{-| `Codec` between a signed 8-bit integer and an Elm `Int`
+-}
+i8 : Codec Int
+i8 =
+    CB.signedInt8
+
+
+{-| `Codec` between a signed 16-bit integer and an Elm `Int`
+-}
+i16 : Codec Int
+i16 =
+    build (BE.signedInt16 Bytes.LE) (BD.signedInt16 Bytes.LE)
+
+
+{-| `Codec` between a signed 32-bit integer and an Elm `Int`
+-}
+i32 : Codec Int
+i32 =
+    build (BE.signedInt32 Bytes.LE) (BD.signedInt32 Bytes.LE)
+
+
+{-| `Codec` between a 32-bit float and an Elm `Float`.
+Due to Elm `Float`s being 64-bit, encoding and decoding it as a 32-bit float won't exactly equal the original value.
+-}
+f32 : Codec Float
+f32 =
+    build (BE.float32 Bytes.LE) (BD.float32 Bytes.LE)
+
+
+{-| `Codec` between a 64-bit float and an Elm `Float`
+-}
+f64 : Codec Float
+f64 =
+    build (BE.float64 Bytes.LE) (BD.float64 Bytes.LE)
 
 
 {-| `Codec` between a sequence of bytes and an Elm `Bool`
@@ -199,86 +332,228 @@ bool =
                         0 ->
                             BD.succeed False
 
-                        1 ->
-                            BD.succeed True
-
                         _ ->
-                            BD.fail
+                            BD.succeed True
                 )
         )
 
 
-{-| `Codec` between a signed 32-bit integer and an Elm `Int`.
-Use this if the byte ordering and number of bytes used isn't a concern.
+{-| A value from a set of possible values enumerated in advance, encoded as a uint.
 -}
-signedInt : Codec Int
-signedInt =
-    signedInt32 endian
+enum : List a -> Codec a
+enum values =
+    build
+        (\value ->
+            findIndexHelp 0 ((==) value) values
+                |> Maybe.withDefault (List.length values)
+                |> uintEncoder
+        )
+        (uintDecoder
+            |> BD.andThen (\i -> getAt i values)
+        )
 
 
-{-| `Codec` between an unsigned 32-bit integer and an Elm `Int`.
-Use this if the byte ordering and number of bytes used isn't a concern.
+{-| <https://github.com/elm-community/list-extra/blob/8.2.4/src/List/Extra.elm#L630>
 -}
-unsignedInt : Codec Int
-unsignedInt =
-    unsignedInt32 endian
+findIndexHelp : Int -> (a -> Bool) -> List a -> Maybe Int
+findIndexHelp index predicate ls =
+    case ls of
+        [] ->
+            Nothing
+
+        x :: xs ->
+            if predicate x then
+                Just index
+
+            else
+                findIndexHelp (index + 1) predicate xs
 
 
-{-| `Codec` between a signed 32-bit integer and an Elm `Int`
+{-| <https://github.com/elm-community/list-extra/blob/8.2.4/src/List/Extra.elm#L122>
 -}
-signedInt32 : Endianness -> Codec Int
-signedInt32 endianness =
-    build (BE.signedInt32 endianness) (BD.signedInt32 endianness)
+getAt : Int -> List a -> Maybe a
+getAt idx xs =
+    if idx < 0 then
+        Nothing
+
+    else
+        List.head <| List.drop idx xs
 
 
-{-| `Codec` between an unsigned 32-bit integer and an Elm `Int`
+{-| `Codec` between a sequence of bytes and an Elm `String`
 -}
-unsignedInt32 : Endianness -> Codec Int
-unsignedInt32 endianness =
-    build (BE.unsignedInt32 endianness) (BD.unsignedInt32 endianness)
+string : Codec String
+string =
+    build
+        (\text ->
+            BE.sequence
+                [ uintEncoder (BE.getStringWidth text)
+                , BE.string text
+                ]
+        )
+        (uintDecoder |> BD.andThen (\charCount -> BD.string charCount))
 
 
-{-| `Codec` between a signed 16-bit integer and an Elm `Int`
+{-| Arbitrary binary data with a fixed "length" in bytes, e.g.
+`fixedLengthData 16`.
 -}
-signedInt16 : Endianness -> Codec Int
-signedInt16 endianness =
-    build (BE.signedInt16 endianness) (BD.signedInt16 endianness)
+fixedLengthData : Int -> Codec Bytes
+fixedLengthData length =
+    Codec
+        { encoder = BE.bytes
+        , decoder = BD.bytes length
+        }
 
 
-{-| `Codec` between an unsigned 16-bit integer and an Elm `Int`
+{-| Arbitrary binary data of an undefined length.
 -}
-unsignedInt16 : Endianness -> Codec Int
-unsignedInt16 endianness =
-    build (BE.unsignedInt16 endianness) (BD.unsignedInt16 endianness)
+data : Codec Bytes
+data =
+    Codec
+        { encoder =
+            \bytes_ ->
+                BE.sequence
+                    [ uintEncoder (Bytes.width bytes_)
+                    , BE.bytes bytes_
+                    ]
+        , decoder = uintDecoder |> BD.andThen (\length -> BD.bytes length)
+        }
 
 
-{-| `Codec` between a signed 8-bit integer and an Elm `Int`
+{-| Synonym of `data`
 -}
-signedInt8 : Codec Int
-signedInt8 =
-    build BE.signedInt8 BD.signedInt8
+bytes : Codec Bytes
+bytes =
+    data
 
 
-{-| `Codec` between an unsigned 8-bit integer and an Elm `Int`
+{-| A type with zero length.
 -}
-unsignedInt8 : Codec Int
-unsignedInt8 =
-    build BE.unsignedInt8 BD.unsignedInt8
+void : Codec {}
+void =
+    build
+        (\_ -> BE.sequence [])
+        (BD.succeed {})
 
 
-{-| `Codec` between a 64-bit float and an Elm `Float`
+
+-- Aggregate types
+
+
+maybe : Codec a -> Codec (Maybe a)
+maybe codec =
+    build
+        (\value ->
+            case value of
+                Just v ->
+                    BE.sequence [ BE.unsignedInt8 1, CB.encoder codec v ]
+
+                Nothing ->
+                    BE.sequence [ BE.unsignedInt8 0 ]
+        )
+        (BD.unsignedInt8
+            |> BD.andThen
+                (\i ->
+                    if i == 0 then
+                        BD.succeed Nothing
+
+                    else
+                        CB.decoder codec
+                )
+        )
+
+
+{-| An array of values with a fixed "length", e.g. [8]string.
 -}
-float64 : Codec Float
-float64 =
-    build (BE.float64 endian) (BD.float64 endian)
+fixedLengthList : Int -> Codec a -> Codec (List a)
+fixedLengthList length codec =
+    build
+        (BE.sequence << List.map (CB.encoder codec))
+        (BD.loop ( length, [] ) (listStep (decoder codec)) |> BD.map List.reverse)
 
 
-{-| `Codec` between a 32-bit float and an Elm `Float`.
-Due to Elm `Float`s being 64-bit, encoding and decoding it as a 32-bit float won't exactly equal the original value.
+{-| `Codec` between a sequence of bytes and an Elm `List`.
 -}
-float32 : Codec Float
-float32 =
-    build (BE.float32 endian) (BD.float32 endian)
+list : Codec a -> Codec (List a)
+list codec =
+    Codec
+        { encoder = \ls -> BE.sequence <| (uintEncoder <| List.length ls) :: List.map (CB.encoder codec) ls
+        , decoder =
+            uintDecoder
+                |> BD.andThen
+                    (\length -> BD.loop ( length, [] ) (listStep (decoder codec)) |> BD.map List.reverse)
+        }
+
+
+listStep : BD.Decoder a -> ( Int, List a ) -> Decoder (BD.Step ( Int, List a ) (List a))
+listStep decoder_ ( n, xs ) =
+    if n <= 0 then
+        BD.succeed (BD.Done xs)
+
+    else
+        BD.map (\x -> BD.Loop ( n - 1, x :: xs )) decoder_
+
+
+{-| An array of values with a fixed "length", e.g. [8]string.
+-}
+fixedLengthArray : Int -> Codec a -> Codec (Array a)
+fixedLengthArray length codec =
+    fixedLengthList codec |> map Array.fromList Array.toList
+
+
+{-| `Codec` between a sequence of bytes and an Elm `Array`.
+-}
+array : Codec a -> Codec (Array a)
+array codec =
+    list codec |> map Array.fromList Array.toList
+
+
+{-| A set of values with a fixed "length", e.g. [8]string.
+-}
+fixedLengthSet : Int -> Codec a -> Codec (Set a)
+fixedLengthSet length codec =
+    fixedLengthList codec |> map Set.fromList Set.toList
+
+
+{-| `Codec` between a sequence of bytes and an Elm `Set`.
+-}
+set : Codec comparable -> Codec (Set comparable)
+set codec =
+    list codec |> map Set.fromList Set.toList
+
+
+{-| A map of values of type B keyed by values of type A, e.g. map[u32]string.
+
+The order of items is undefined.
+
+This is not called `map` to avoid clashing with the common usage of the term in Elm.
+
+-}
+dict : Codec comparable -> Codec a -> Codec (Dict comparable a)
+dict keyCodec valueCodec =
+    list (tuple keyCodec valueCodec) |> map Dict.fromList Dict.toList
+
+
+
+{-
+   # Aggregate types
+
+   @docs taggedUnion, taggedUnionMember, buildTaggedUnion
+   @docs custom, variant0, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, buildCustom
+   @docs struct, structField, buildStruct
+   @docs object, field, buildObject
+
+
+   # Mapping
+
+   @docs map, andThen
+
+
+   # Fancy Codecs
+
+   @docs lazy, recursive
+
+-}
 
 
 {-| `Codec` between a sequence of bytes and an Elm `Char`
@@ -291,95 +566,6 @@ char =
             |> BD.andThen
                 (String.toList >> List.head >> Maybe.map BD.succeed >> Maybe.withDefault BD.fail)
         )
-
-
-
--- DATA STRUCTURES
-
-
-{-| Represents an optional value.
--}
-maybe : Codec a -> Codec (Maybe a)
-maybe codec =
-    Codec
-        { decoder =
-            BD.unsignedInt8
-                |> BD.andThen
-                    (\value ->
-                        case value of
-                            0 ->
-                                BD.succeed Nothing
-
-                            1 ->
-                                decoder codec |> BD.map Just
-
-                            _ ->
-                                BD.fail
-                    )
-        , encoder =
-            \v ->
-                case v of
-                    Nothing ->
-                        BE.unsignedInt8 0
-
-                    Just x ->
-                        BE.sequence
-                            [ BE.unsignedInt8 1
-                            , encoder codec x
-                            ]
-        }
-
-
-{-| `Codec` between a sequence of bytes and an Elm `List`.
--}
-list : Codec a -> Codec (List a)
-list codec =
-    Codec
-        { encoder = listEncode (encoder codec)
-        , decoder =
-            BD.unsignedInt32 endian
-                |> BD.andThen
-                    (\length -> BD.loop ( length, [] ) (listStep (decoder codec)))
-        }
-
-
-listEncode : (a -> Encoder) -> List a -> Encoder
-listEncode encoder_ list_ =
-    list_
-        |> List.map encoder_
-        |> List.reverse
-        |> (::) (BE.unsignedInt32 endian (List.length list_))
-        |> BE.sequence
-
-
-listStep : BD.Decoder a -> ( Int, List a ) -> Decoder (BD.Step ( Int, List a ) (List a))
-listStep decoder_ ( n, xs ) =
-    if n <= 0 then
-        BD.succeed (BD.Done xs)
-
-    else
-        BD.map (\x -> BD.Loop ( n - 1, x :: xs )) decoder_
-
-
-{-| `Codec` between a sequence of bytes and an Elm `Array`.
--}
-array : Codec a -> Codec (Array a)
-array codec =
-    list codec |> map Array.fromList Array.toList
-
-
-{-| `Codec` between a sequence of bytes and an Elm `Dict`.
--}
-dict : Codec comparable -> Codec a -> Codec (Dict comparable a)
-dict keyCodec valueCodec =
-    list (tuple keyCodec valueCodec) |> map Dict.fromList Dict.toList
-
-
-{-| `Codec` between a sequence of bytes and an Elm `Set`.
--}
-set : Codec comparable -> Codec (Set comparable)
-set codec =
-    list codec |> map Set.fromList Set.toList
 
 
 {-| `Codec` between a sequence of bytes and an Elm `Tuple`.
@@ -438,21 +624,6 @@ result errorCodec valueCodec =
         |> variant1 0 Err errorCodec
         |> variant1 1 Ok valueCodec
         |> buildCustom
-
-
-{-| `Codec` for `Bytes`. This is useful if you wanted to include binary data that you're going to decode elsewhere such as a PNG file.
--}
-bytes : Codec Bytes
-bytes =
-    Codec
-        { encoder =
-            \bytes_ ->
-                BE.sequence
-                    [ BE.unsignedInt32 endian (Bytes.width bytes_)
-                    , BE.bytes bytes_
-                    ]
-        , decoder = BD.unsignedInt32 endian |> BD.andThen (\length -> BD.bytes length)
-        }
 
 
 
@@ -900,6 +1071,9 @@ map fromBytes toBytes codec =
                 )
                 (\volume -> volume)
 
+Note that this function is a bit risky.
+If you encode data that fails to decode, you won't get any indication as to what happened.
+
 -}
 andThen : (a -> Maybe b) -> (b -> a) -> Codec a -> Codec b
 andThen fromBytes toBytes codec =
@@ -937,9 +1111,6 @@ The argument to the function you need to pass is the fully formed `Codec`, see t
                     |> Codec.map Peano (\(Peano p) -> p)
             )
 
-**Warning:** `recursive` is _not_ stack safe!
-If you have something like `Peano (Just (Peano Just (...)))` nested within itself sufficiently many times and you try to use `peanoCodec` on it, you'll get a stack overflow!
-
 -}
 recursive : (Codec a -> Codec a) -> Codec a
 recursive f =
@@ -962,9 +1133,6 @@ recursive f =
     peanoCodec : Codec Peano
     peanoCodec =
         Codec.maybe (Codec.lazy (\() -> peanoCodec)) |> Codec.map Peano (\(Peano a) -> a)
-
-**Warning:** `lazy` is _not_ stack safe!
-If you have something like `Peano (Just (Peano Just (...)))` nested within itself sufficiently many times and you try to use `peanoCodec` on it, you'll get a stack overflow!
 
 -}
 lazy : (() -> Codec a) -> Codec a
