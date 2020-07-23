@@ -937,7 +937,7 @@ The argument to the function you need to pass is the fully formed `Codec`, see t
                     |> Codec.map Peano (\(Peano p) -> p)
             )
 
-Note that this function is **not** stack safe!
+**Warning:** `recursive` is _not_ stack safe!
 If you have something like `Peano (Just (Peano Just (...)))` nested within itself sufficiently many times and you try to use `peanoCodec` on it, you'll get a stack overflow!
 
 -}
@@ -963,7 +963,7 @@ recursive f =
     peanoCodec =
         Codec.maybe (Codec.lazy (\() -> peanoCodec)) |> Codec.map Peano (\(Peano a) -> a)
 
-Note that this function is **not** stack safe!
+**Warning:** `lazy` is _not_ stack safe!
 If you have something like `Peano (Just (Peano Just (...)))` nested within itself sufficiently many times and you try to use `peanoCodec` on it, you'll get a stack overflow!
 
 -}
