@@ -23,6 +23,11 @@ suite =
                 (\x -> x / 2)
                 Codec.float64
         , roundtrips "lazy" peanoFuzz peanoCodec
+
+        -- This test is expected to fail. Unfortunately it's very difficult to make lazy and recursive stack safe.
+        --, roundtripsConstant "lazy stackoverflow"
+        --    (List.repeat 10000 () |> List.foldl (\() peano -> Peano (Just peano)) (Peano Nothing))
+        --    peanoCodec
         , describe "maybe" maybeTests
         , describe "constant"
             [ test "roundtrips"
@@ -40,6 +45,16 @@ roundtrips : String -> Fuzzer a -> Codec a -> Test
 roundtrips name fuzzer codec =
     fuzz fuzzer name <|
         \value ->
+            value
+                |> Codec.encodeToValue codec
+                |> Codec.decodeValue codec
+                |> Expect.equal (Just value)
+
+
+roundtripsConstant : String -> a -> Codec a -> Test
+roundtripsConstant name value codec =
+    test name <|
+        \() ->
             value
                 |> Codec.encodeToValue codec
                 |> Codec.decodeValue codec
@@ -80,6 +95,7 @@ containersTests : List Test
 containersTests =
     [ roundtrips "Codec.array" (Fuzz.array signedInt32Fuzz) (Codec.array Codec.signedInt)
     , roundtrips "Codec.list" (Fuzz.list signedInt32Fuzz) (Codec.list Codec.signedInt)
+    , roundtripsConstant "Codec.list stackoverflow" (List.repeat 100000 'a') (Codec.list Codec.char)
     , roundtrips "Codec.dict"
         (Fuzz.map2 Tuple.pair Fuzz.string signedInt32Fuzz
             |> Fuzz.list
