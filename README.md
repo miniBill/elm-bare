@@ -1,5 +1,7 @@
 # elm-codec-bytes
 
+**Warning:** This package is deprecated. Use [MartinSStewart/elm-serialize](https://package.elm-lang.org/packages/MartinSStewart/elm-serialize/latest/) instead.
+
 The goal of this package is to easily convert Elm values to a sequence of 
 bytes and back without failing to decode or ending up with different values.
 
