@@ -2,9 +2,9 @@ module Base exposing (roundtrips, suite)
 
 import Bytes
 import Bytes.Encode
-import Codec.Bytes as Codec exposing (Bytes, Codec)
+import Codec.Bare as Codec exposing (Bytes, Codec)
 import Dict
-import Expect exposing (Expectation)
+import Expect
 import Fuzz exposing (Fuzzer)
 import Set
 import Test exposing (Test, describe, fuzz, test)
@@ -21,7 +21,7 @@ suite =
             Codec.map
                 (\x -> x * 2)
                 (\x -> x / 2)
-                Codec.float64
+                Codec.f64
         , describe "andThen" andThenTests
         , roundtrips "lazy" peanoFuzz peanoCodec
 
@@ -77,10 +77,10 @@ basicTests : List Test
 basicTests =
     [ roundtrips "Codec.string" Fuzz.string Codec.string
     , roundtrips "Codec.string with unicode chars" (Fuzz.constant "Ⓐ弈😀") Codec.string
-    , roundtrips "Codec.signedInt" signedInt32Fuzz Codec.signedInt
-    , roundtrips "Codec.unsignedInt" unsignedInt32Fuzz Codec.unsignedInt
-    , roundtrips "Codec.float64" Fuzz.float Codec.float64
-    , roundtripsWithin "Codec.float32" Fuzz.float Codec.float32
+    , roundtrips "Codec.int" signedInt32Fuzz Codec.int
+    , roundtrips "Codec.uint" unsignedInt32Fuzz Codec.uint
+    , roundtrips "Codec.f64" Fuzz.float Codec.f64
+    , roundtripsWithin "Codec.f32" Fuzz.float Codec.f32
     , roundtrips "Codec.bool" Fuzz.bool Codec.bool
     , roundtrips "Codec.char" Fuzz.char Codec.char
     , roundtrips "Codec.bytes" fuzzBytes Codec.bytes
@@ -94,28 +94,30 @@ fuzzBytes =
 
 containersTests : List Test
 containersTests =
-    [ roundtrips "Codec.array" (Fuzz.array signedInt32Fuzz) (Codec.array Codec.signedInt)
-    , roundtrips "Codec.list" (Fuzz.list signedInt32Fuzz) (Codec.list Codec.signedInt)
+    [ roundtrips "Codec.array" (Fuzz.array signedInt32Fuzz) (Codec.array Codec.int)
+    , roundtrips "Codec.list" (Fuzz.list signedInt32Fuzz) (Codec.list Codec.int)
     , roundtripsConstant "Codec.list stackoverflow" (List.repeat 100000 'a') (Codec.list Codec.char)
     , roundtrips "Codec.dict"
         (Fuzz.map2 Tuple.pair Fuzz.string signedInt32Fuzz
             |> Fuzz.list
             |> Fuzz.map Dict.fromList
         )
-        (Codec.dict Codec.string Codec.signedInt)
+        (Codec.dict Codec.string Codec.int)
     , roundtrips "Codec.set"
         (Fuzz.list signedInt32Fuzz |> Fuzz.map Set.fromList)
-        (Codec.set Codec.signedInt)
+        (Codec.set Codec.int)
     , roundtrips "Codec.tuple"
         (Fuzz.tuple ( signedInt32Fuzz, signedInt32Fuzz ))
-        (Codec.tuple Codec.signedInt Codec.signedInt)
+        (Codec.tuple Codec.int Codec.int)
     ]
 
 
+unsignedInt32Fuzz : Fuzzer Int
 unsignedInt32Fuzz =
     Fuzz.intRange 0 4294967295
 
 
+signedInt32Fuzz : Fuzzer Int
 signedInt32Fuzz =
     Fuzz.intRange -2147483648 2147483647
 
@@ -130,7 +132,7 @@ objectTests =
     , roundtrips "with 1 field"
         (Fuzz.map (\i -> { fname = i }) signedInt32Fuzz)
         (Codec.object (\i -> { fname = i })
-            |> Codec.field .fname Codec.signedInt
+            |> Codec.field .fname Codec.int
             |> Codec.buildObject
         )
     , roundtrips "with 2 fields"
@@ -149,8 +151,8 @@ objectTests =
                 , b = b
                 }
             )
-            |> Codec.field .a Codec.signedInt
-            |> Codec.field .b Codec.signedInt
+            |> Codec.field .a Codec.int
+            |> Codec.field .b Codec.int
             |> Codec.buildObject
         )
     ]
@@ -185,18 +187,18 @@ customTests =
                     Newtype a ->
                         f a
             )
-            |> Codec.variant1 1 Newtype Codec.signedInt
+            |> Codec.variant1 1 Newtype Codec.int
             |> Codec.buildCustom
         )
     , roundtrips "with 1 ctor, 1 arg, different id codec"
         (Fuzz.map Newtype signedInt32Fuzz)
-        (Codec.customWithIdCodec Codec.unsignedInt8
+        (Codec.customWithIdCodec Codec.u8
             (\f v ->
                 case v of
                     Newtype a ->
                         f a
             )
-            |> Codec.variant1 1 Newtype Codec.signedInt
+            |> Codec.variant1 1 Newtype Codec.int
             |> Codec.buildCustom
         )
     , roundtrips "with 1 ctor, 6 arg"
@@ -207,7 +209,7 @@ customTests =
                     Newtype6 a b c d e f ->
                         function a b c d e f
             )
-            |> Codec.variant6 1 Newtype6 Codec.signedInt Codec.signedInt Codec.signedInt Codec.signedInt Codec.signedInt Codec.signedInt
+            |> Codec.variant6 1 Newtype6 Codec.int Codec.int Codec.int Codec.int Codec.int Codec.int
             |> Codec.buildCustom
         )
     , describe "misc" <|
@@ -224,7 +226,7 @@ customTests =
                 Codec.custom match
                     -- Use a negative id here just to make sure the default id codec handles negative values
                     |> Codec.variant0 -1 Nothing
-                    |> Codec.variant1 0 Just Codec.signedInt
+                    |> Codec.variant1 0 Just Codec.int
                     |> Codec.buildCustom
 
             fuzzers =
@@ -241,11 +243,12 @@ customTests =
     ]
 
 
+volumeCodec : Codec Float
 volumeCodec =
-    Codec.float64
+    Codec.f64
         |> Codec.andThen
             (\volume ->
-                if volume <= 1 && volume >= 0 then
+                if 0 <= volume && volume <= 1 then
                     Just volume
 
                 else
@@ -297,7 +300,7 @@ maybeTests =
             ]
         )
       <|
-        Codec.maybe Codec.signedInt
+        Codec.maybe Codec.int
     ]
 
 
@@ -316,7 +319,7 @@ recursiveTests =
                                 fcons x xs
                     )
                     |> Codec.variant0 0 []
-                    |> Codec.variant2 1 (::) Codec.signedInt c
+                    |> Codec.variant2 1 (::) Codec.int c
                     |> Codec.buildCustom
             )
     ]

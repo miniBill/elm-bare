@@ -3,9 +3,10 @@ module Codec.Bare exposing
     , Decoder, decoder, decodeValue
     , encoder, encodeToValue
     , uint, int
-    , u8, u16, u32, u64
-    , i8, i16, i32, i64
+    , u8, u16, u32
+    , i8, i16, i32
     , f32, f64
+    , bool
     , enum
     , string
     , fixedLengthData, bytes, data
@@ -19,7 +20,7 @@ module Codec.Bare exposing
     , ObjectCodec, object, field, buildObject
     , map, andThen
     , lazy, recursive
-    , buildStruct, buildTaggedUnion, char, constant, customWithIdCodec, float32, float64, optional, result, signedInt, signedInt16, signedInt32, signedInt8, stringbool, struct, taggedUnion, triple, tuple, unsignedInt, unsignedInt16, unsignedInt32, unsignedInt8
+    , char, constant, customWithIdCodec, result, triple, tuple
     )
 
 {-| A `Codec a` contains a `Bytes.Decoder a` and the corresponding `a -> Bytes.Encoder`.
@@ -145,15 +146,15 @@ type alias Decoder a =
 {-| Extracts the `Decoder` contained inside the `Codec`.
 -}
 decoder : Codec a -> Decoder a
-decoder =
-    CB.decoder
+decoder (Codec p) =
+    p.decoder
 
 
 {-| Run a `Codec` to turn a sequence of bytes into an Elm value.
 -}
 decodeValue : Codec a -> Bytes -> Maybe a
-decodeValue =
-    CB.decodeValue
+decodeValue (Codec p) =
+    BD.decode p.decoder
 
 
 
@@ -163,19 +164,27 @@ decodeValue =
 {-| Extracts the encoding function contained inside the `Codec`.
 -}
 encoder : Codec a -> a -> Encoder
-encoder =
-    CB.encoder
+encoder (Codec p) =
+    p.encoder
 
 
 {-| Convert an Elm value into a sequence of bytes.
 -}
 encodeToValue : Codec a -> a -> Bytes
-encodeToValue =
-    CB.encodeToValue
+encodeToValue (Codec p) =
+    BE.encode << p.encoder
 
 
 
 --Built-in Types
+
+
+build : (a -> Encoder) -> Decoder a -> Codec a
+build e d =
+    Codec
+        { encoder = e
+        , decoder = d
+        }
 
 
 {-| `Codec` between an unsigned variable-length integer and an Elm `Int`.
@@ -260,7 +269,7 @@ int =
 -}
 u8 : Codec Int
 u8 =
-    CB.unsignedInt8
+    build BE.unsignedInt8 BD.unsignedInt8
 
 
 {-| `Codec` between an unsigned 16-bit integer and an Elm `Int`
@@ -281,7 +290,7 @@ u32 =
 -}
 i8 : Codec Int
 i8 =
-    CB.signedInt8
+    build BE.signedInt8 BD.signedInt8
 
 
 {-| `Codec` between a signed 16-bit integer and an Elm `Int`
@@ -349,7 +358,15 @@ enum values =
                 |> uintEncoder
         )
         (uintDecoder
-            |> BD.andThen (\i -> getAt i values)
+            |> BD.andThen
+                (\i ->
+                    case getAt i values of
+                        Just r ->
+                            BD.succeed r
+
+                        Nothing ->
+                            BD.fail
+                )
         )
 
 
@@ -446,7 +463,7 @@ maybe codec =
         (\value ->
             case value of
                 Just v ->
-                    BE.sequence [ BE.unsignedInt8 1, CB.encoder codec v ]
+                    BE.sequence [ BE.unsignedInt8 1, encoder codec v ]
 
                 Nothing ->
                     BE.sequence [ BE.unsignedInt8 0 ]
@@ -454,11 +471,15 @@ maybe codec =
         (BD.unsignedInt8
             |> BD.andThen
                 (\i ->
-                    if i == 0 then
-                        BD.succeed Nothing
+                    case i of
+                        0 ->
+                            BD.succeed Nothing
 
-                    else
-                        CB.decoder codec
+                        1 ->
+                            BD.map Just <| decoder codec
+
+                        _ ->
+                            BD.fail
                 )
         )
 
@@ -468,7 +489,7 @@ maybe codec =
 fixedLengthList : Int -> Codec a -> Codec (List a)
 fixedLengthList length codec =
     build
-        (BE.sequence << List.map (CB.encoder codec))
+        (BE.sequence << List.map (encoder codec))
         (BD.loop ( length, [] ) (listStep (decoder codec)) |> BD.map List.reverse)
 
 
@@ -477,7 +498,7 @@ fixedLengthList length codec =
 list : Codec a -> Codec (List a)
 list codec =
     Codec
-        { encoder = \ls -> BE.sequence <| (uintEncoder <| List.length ls) :: List.map (CB.encoder codec) ls
+        { encoder = \ls -> BE.sequence <| (uintEncoder <| List.length ls) :: List.map (encoder codec) ls
         , decoder =
             uintDecoder
                 |> BD.andThen
@@ -498,7 +519,7 @@ listStep decoder_ ( n, xs ) =
 -}
 fixedLengthArray : Int -> Codec a -> Codec (Array a)
 fixedLengthArray length codec =
-    fixedLengthList codec |> map Array.fromList Array.toList
+    fixedLengthList length codec |> map Array.fromList Array.toList
 
 
 {-| `Codec` between a sequence of bytes and an Elm `Array`.
@@ -510,9 +531,9 @@ array codec =
 
 {-| A set of values with a fixed "length", e.g. [8]string.
 -}
-fixedLengthSet : Int -> Codec a -> Codec (Set a)
+fixedLengthSet : Int -> Codec comparable -> Codec (Set comparable)
 fixedLengthSet length codec =
-    fixedLengthList codec |> map Set.fromList Set.toList
+    fixedLengthList length codec |> map Set.fromList Set.toList
 
 
 {-| `Codec` between a sequence of bytes and an Elm `Set`.
@@ -727,7 +748,7 @@ You need to pass a pattern matching function, see the FAQ for details.
 -}
 custom : match -> CustomCodec match value
 custom match =
-    customWithIdCodec signedInt match
+    customWithIdCodec int match
 
 
 variant :
