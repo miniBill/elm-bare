@@ -15,7 +15,7 @@ suite =
     describe "Testing roundtrips"
         [ describe "Basic" basicTests
         , describe "Containers" containersTests
-        , describe "Object" objectTests
+        , describe "Struct" structTests
         , describe "Custom" customTests
         , roundtrips "bimap" Fuzz.float <|
             Codec.map
@@ -29,13 +29,13 @@ suite =
         --, roundtripsConstant "lazy stackoverflow"
         --    (List.repeat 10000 () |> List.foldl (\() peano -> Peano (Just peano)) (Peano Nothing))
         --    peanoCodec
-        , describe "maybe" maybeTests
-        , describe "constant"
+        , describe "maybe" optionalTests
+        , describe "void"
             [ test "roundtrips"
                 (\_ ->
-                    Codec.constant 632
+                    Codec.void
                         |> (\d -> Codec.decodeValue d (Bytes.Encode.sequence [] |> Bytes.Encode.encode))
-                        |> Expect.equal (Just 632)
+                        |> Expect.equal (Just ())
                 )
             ]
         , describe "recursive" recursiveTests
@@ -79,11 +79,12 @@ basicTests =
     , roundtrips "Codec.string with unicode chars" (Fuzz.constant "Ⓐ弈😀") Codec.string
     , roundtrips "Codec.int" signedInt32Fuzz Codec.int
     , roundtrips "Codec.uint" unsignedInt32Fuzz Codec.uint
+    , roundtrips "Codec.u64" unsignedInt64Fuzz Codec.u64
     , roundtrips "Codec.f64" Fuzz.float Codec.f64
     , roundtripsWithin "Codec.f32" Fuzz.float Codec.f32
     , roundtrips "Codec.bool" Fuzz.bool Codec.bool
     , roundtrips "Codec.char" Fuzz.char Codec.char
-    , roundtrips "Codec.bytes" fuzzBytes Codec.bytes
+    , roundtrips "Codec.data" fuzzBytes Codec.data
     ]
 
 
@@ -106,9 +107,6 @@ containersTests =
     , roundtrips "Codec.set"
         (Fuzz.list signedInt32Fuzz |> Fuzz.map Set.fromList)
         (Codec.set Codec.int)
-    , roundtrips "Codec.tuple"
-        (Fuzz.tuple ( signedInt32Fuzz, signedInt32Fuzz ))
-        (Codec.tuple Codec.int Codec.int)
     ]
 
 
@@ -122,18 +120,23 @@ signedInt32Fuzz =
     Fuzz.intRange -2147483648 2147483647
 
 
-objectTests : List Test
-objectTests =
+unsignedInt64Fuzz : Fuzzer Int
+unsignedInt64Fuzz =
+    Fuzz.intRange 0 (2 ^ 53 - 1)
+
+
+structTests : List Test
+structTests =
     [ roundtrips "with 0 fields"
         (Fuzz.constant {})
-        (Codec.object {}
-            |> Codec.buildObject
+        (Codec.struct {}
+            |> Codec.buildStruct
         )
     , roundtrips "with 1 field"
         (Fuzz.map (\i -> { fname = i }) signedInt32Fuzz)
-        (Codec.object (\i -> { fname = i })
+        (Codec.struct (\i -> { fname = i })
             |> Codec.field .fname Codec.int
-            |> Codec.buildObject
+            |> Codec.buildStruct
         )
     , roundtrips "with 2 fields"
         (Fuzz.map2
@@ -145,7 +148,7 @@ objectTests =
             signedInt32Fuzz
             signedInt32Fuzz
         )
-        (Codec.object
+        (Codec.struct
             (\a b ->
                 { a = a
                 , b = b
@@ -153,7 +156,7 @@ objectTests =
             )
             |> Codec.field .a Codec.int
             |> Codec.field .b Codec.int
-            |> Codec.buildObject
+            |> Codec.buildStruct
         )
     ]
 
@@ -170,47 +173,36 @@ customTests : List Test
 customTests =
     [ roundtrips "with 1 ctor, 0 args"
         (Fuzz.constant ())
-        (Codec.custom
+        (Codec.taggedUnion
             (\f v ->
                 case v of
                     () ->
                         f
             )
             |> Codec.variant0 0 ()
-            |> Codec.buildCustom
+            |> Codec.buildTaggedUnion
         )
     , roundtrips "with 1 ctor, 1 arg"
         (Fuzz.map Newtype signedInt32Fuzz)
-        (Codec.custom
+        (Codec.taggedUnion
             (\f v ->
                 case v of
                     Newtype a ->
                         f a
             )
             |> Codec.variant1 1 Newtype Codec.int
-            |> Codec.buildCustom
-        )
-    , roundtrips "with 1 ctor, 1 arg, different id codec"
-        (Fuzz.map Newtype signedInt32Fuzz)
-        (Codec.customWithIdCodec Codec.u8
-            (\f v ->
-                case v of
-                    Newtype a ->
-                        f a
-            )
-            |> Codec.variant1 1 Newtype Codec.int
-            |> Codec.buildCustom
+            |> Codec.buildTaggedUnion
         )
     , roundtrips "with 1 ctor, 6 arg"
         (Fuzz.map5 (Newtype6 0) signedInt32Fuzz signedInt32Fuzz signedInt32Fuzz signedInt32Fuzz signedInt32Fuzz)
-        (Codec.custom
+        (Codec.taggedUnion
             (\function v ->
                 case v of
                     Newtype6 a b c d e f ->
                         function a b c d e f
             )
             |> Codec.variant6 1 Newtype6 Codec.int Codec.int Codec.int Codec.int Codec.int Codec.int
-            |> Codec.buildCustom
+            |> Codec.buildTaggedUnion
         )
     , describe "misc" <|
         let
@@ -223,11 +215,10 @@ customTests =
                         fjust v
 
             codec =
-                Codec.custom match
-                    -- Use a negative id here just to make sure the default id codec handles negative values
-                    |> Codec.variant0 -1 Nothing
+                Codec.taggedUnion match
+                    |> Codec.variant0 3 Nothing
                     |> Codec.variant1 0 Just Codec.int
-                    |> Codec.buildCustom
+                    |> Codec.buildTaggedUnion
 
             fuzzers =
                 [ ( "1st ctor", Fuzz.constant Nothing )
@@ -273,7 +264,7 @@ type Peano
 -}
 peanoCodec : Codec Peano
 peanoCodec =
-    Codec.maybe (Codec.lazy (\() -> peanoCodec)) |> Codec.map Peano (\(Peano a) -> a)
+    Codec.optional (Codec.lazy (\() -> peanoCodec)) |> Codec.map Peano (\(Peano a) -> a)
 
 
 peanoFuzz : Fuzzer Peano
@@ -290,8 +281,8 @@ intToPeano peano value =
         intToPeano peano (value - 1) |> Just |> Peano
 
 
-maybeTests : List Test
-maybeTests =
+optionalTests : List Test
+optionalTests =
     [ roundtrips
         "single"
         (Fuzz.oneOf
@@ -300,7 +291,7 @@ maybeTests =
             ]
         )
       <|
-        Codec.maybe Codec.int
+        Codec.optional Codec.int
     ]
 
 
@@ -309,7 +300,7 @@ recursiveTests =
     [ roundtrips "list" (Fuzz.list signedInt32Fuzz) <|
         Codec.recursive
             (\c ->
-                Codec.custom
+                Codec.taggedUnion
                     (\fempty fcons value ->
                         case value of
                             [] ->
@@ -320,6 +311,6 @@ recursiveTests =
                     )
                     |> Codec.variant0 0 []
                     |> Codec.variant2 1 (::) Codec.int c
-                    |> Codec.buildCustom
+                    |> Codec.buildTaggedUnion
             )
     ]

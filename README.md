@@ -1,5 +1,5 @@
 # elm-bare
-The goal of this package is to implement the BARE Message Encoding format in Elm, using a "`Codec`" API.
+The goal of this package is to implement the [BARE Message Encoding](https://baremessages.org/) format in Elm, using a "`Codec`" API.
 
 ## Basic usage
 
@@ -10,7 +10,7 @@ import Codec.Bare as Codec exposing (Bytes, Codec, Encoder)
 
 codec : Codec (List Int)
 codec =
-    Codec.list Codec.signedInt
+    Codec.list Codec.int
 
 encode : List Int -> Bytes
 encode list =

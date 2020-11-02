@@ -2,39 +2,37 @@ module Codec.Bare exposing
     ( Codec, Encoder, Bytes
     , Decoder, decoder, decodeValue
     , encoder, encodeToValue
-    , uint, int
-    , u8, u16, u32
+    , uint
+    , int
+    , u8, u16, u32, u64
     , i8, i16, i32
     , f32, f64
     , bool
     , enum
-    , string
-    , fixedLengthData, bytes, data
+    , string, char
+    , dataWithLength, data
     , void
-    , maybe
-    , fixedLengthList, list
-    , fixedLengthArray, array
-    , fixedLengthSet, set
+    , optional
+    , listWithLength
+    , list
+    , arrayWithLength
+    , array
+    , set
     , dict
-    , CustomCodec, custom, variant0, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, buildCustom
-    , ObjectCodec, object, field, buildObject
+    , TaggedUnionCodec, taggedUnion, variant0, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, buildTaggedUnion
+    , StructCodec, struct, field, buildStruct
     , map, andThen
     , lazy, recursive
-    , char, constant, customWithIdCodec, result, triple, tuple
     )
 
-{-| A `Codec a` contains a `Bytes.Decoder a` and the corresponding `a -> Bytes.Encoder`.
-
-This module is an implementation of the BARE format.
-The types are fully compatible with `Codec.Bytes`, but if you want to ensure interoperability with other BARE implementation
-you should use only functions from this module.
+{-| This module is an implementation of [the BARE format](https://baremessages.org/),
+which at the time of writing is an [IETF draft](https://tools.ietf.org/html/draft-devault-bare-00).
 
 The names of the functions correspond, as far as possible, to the ones in the original specification.
-For some functions synonyms more familiar for Elm users are provided.
 
 Most of the following documentation is taken from
 [the original specification (CC-BY-SA)](https://git.sr.ht/~sircmpwn/bare),
-and while the code is licensed with a MIT license, this documentation is CC-BY-SA itself.
+and while the code is licensed with a MIT license, this documentation is thus CC-BY-SA itself.
 
 Binary Application Record Encoding (BARE) is, as the name implies, a simple
 binary representation for structured application data.
@@ -46,7 +44,7 @@ can be inferred from context that the message represents user information, and
 the structure of such messages is available in the documentation for this API.
 
 
-# Definition
+# Types
 
 @docs Codec, Encoder, Bytes
 
@@ -61,28 +59,66 @@ the structure of such messages is available in the documentation for this API.
 @docs encoder, encodeToValue
 
 
-# Built-in Types
+# Primitive Types
 
-@docs uint, int
+
+## Integers
+
+@docs uint
+@docs int
+
+
+## Unsigned fixed precision integers
+
+Unsigned integers of a fixed precision, respectively 8, 16, 32, and 64 bits.
+They are encoded in little-endian (least significant octet first).
+
 @docs u8, u16, u32, u64
-@docs i8, i16, i32, i64
+
+
+## Signed fixed precision integers
+
+Signed integers of a fixed precision, respectively 8, 16, and 32 bits. `elm-bare` does not support signed 64 bits integers yet (PRs welcome).
+They are encoded in little-endian (least significant octet first), with two's compliment notation.
+
+@docs i8, i16, i32
+
+
+## Floating point numbers
+
+Floating-point numbers represented with the IEEE 754 binary32 and binary64 floating point number formats.
+
 @docs f32, f64
+
+
+## Others
+
 @docs bool
 @docs enum
-@docs string
-@docs fixedLengthData, bytes, data
+@docs string, char
+@docs dataWithLength, data
 @docs void
 
 
 # Aggregate types
 
-@docs maybe
-@docs fixedLengthList, list
-@docs fixedLengthArray, array
-@docs fixedLengthSet, set
+@docs optional
+@docs listWithLength
+@docs list
+@docs arrayWithLength
+@docs array
+@docs set
 @docs dict
-@docs CustomCodec, custom, variant0, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, buildCustom
-@docs ObjectCodec, object, field, buildObject
+
+
+# Tagged unions
+
+@docs TaggedUnionCodec, taggedUnion, variant0, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, buildTaggedUnion
+
+
+# Structs
+
+@docs StructCodec, struct, field, buildStruct
 
 
 # Mapping
@@ -110,6 +146,9 @@ import Set exposing (Set)
 
 
 {-| A value that knows how to encode and decode a sequence of bytes.
+
+A `Codec a` contains a `Bytes.Decoder a` and the corresponding `a -> Bytes.Encoder`.
+
 -}
 type Codec a
     = Codec
@@ -187,15 +226,9 @@ build e d =
         }
 
 
-{-| `Codec` between an unsigned variable-length integer and an Elm `Int`.
+{-| An unsigned integer with a variable-length encoding. Each octet of the encoded value has the most-significant bit set, except for the last octet. The remaining bits are the integer value in 7-bit groups, least-significant first.
 
-A variable-length integer. Each octet of the encoded value has
-the most-significant bit set, except for the last octet. The
-remaining bits are the integer value in 7-bit groups,
-least-significant first.
-
-The maximum precision of a varint is 56 bit (64 bit in the original spec,
-but Elm `Int`s start to become unreliable after 56 bits).
+The maximum precision of such a number is 56-bits (64-bits in the original spec, but Elm `Int`s start to become unreliable after 56-bits, so caveat emptor). The maximum length of an encoded uint should thus be 8 octects but can be up to 10 octects for out-of-range integers.
 
 -}
 uint : Codec Int
@@ -229,20 +262,9 @@ uintDecoder =
             )
 
 
-{-| `Codec` between a signed variable-length integer and an Elm `Int`.
+{-| A signed integer with a variable-length encoding. Signed integers are represented as uint using a "zig-zag" encoding: positive values x are written as 2x + 0, negative values are written as 2(^x) + 1. In other words, negative numbers are complemented and whether to complement is encoded in bit 0
 
-A variable-length integer. Each octet of the encoded value has
-the most-significant bit set, except for the last octet. The
-remaining bits are the integer value in 7-bit groups,
-least-significant first.
-
-Signed integers are mapped to unsigned integers using "zig-zag"
-encoding: positive values x are written as `2 * x + 0`, negative
-values are written as `2 * (~x) + 1`; that is, negative numbers are
-complemented and whether to complement is encoded in bit 0.
-
-The maximum precision of a varint is 56 bit (64 bit in the original spec,
-but Elm `Int`s start to become unreliable after 56 bits).
+The maximum precision of such a number is 56-bits (64-bits in the original spec, but Elm `Int`s start to become unreliable after 56-bits, so caveat emptor). The maximum length of an encoded uint should thus be 8 octects but can be up to 10 octects for out-of-range integers.
 
 -}
 int : Codec Int
@@ -265,64 +287,73 @@ int =
         uint
 
 
-{-| `Codec` between an unsigned 8-bit integer and an Elm `Int`
--}
+{-| -}
 u8 : Codec Int
 u8 =
     build BE.unsignedInt8 BD.unsignedInt8
 
 
-{-| `Codec` between an unsigned 16-bit integer and an Elm `Int`
--}
+{-| -}
 u16 : Codec Int
 u16 =
     build (BE.unsignedInt16 Bytes.LE) (BD.unsignedInt16 Bytes.LE)
 
 
-{-| `Codec` between an unsigned 32-bit integer and an Elm `Int`
--}
+{-| -}
 u32 : Codec Int
 u32 =
     build (BE.unsignedInt32 Bytes.LE) (BD.unsignedInt32 Bytes.LE)
 
 
-{-| `Codec` between a signed 8-bit integer and an Elm `Int`
+{-| WARNING (from the official Elm docs): Note: `Int` math is well-defined in the range -2^31 to 2^31 - 1.
+Outside of that range, the behavior is determined by the compilation target.
+When generating JavaScript, the safe range expands to -2^53 to 2^53 - 1 for some operations,
+but if we generate WebAssembly some day, we would do the traditional integer overflow.
+This quirk is necessary to get good performance on quirky compilation targets.
 -}
+u64 : Codec Int
+u64 =
+    map
+        (\( l, h ) -> l + h * (2 ^ 32))
+        (\n -> ( modBy (2 ^ 32) n, n // (2 ^ 32) ))
+        (tuple u32 u32)
+
+
+{-| -}
 i8 : Codec Int
 i8 =
     build BE.signedInt8 BD.signedInt8
 
 
-{-| `Codec` between a signed 16-bit integer and an Elm `Int`
--}
+{-| -}
 i16 : Codec Int
 i16 =
     build (BE.signedInt16 Bytes.LE) (BD.signedInt16 Bytes.LE)
 
 
-{-| `Codec` between a signed 32-bit integer and an Elm `Int`
--}
+{-| -}
 i32 : Codec Int
 i32 =
     build (BE.signedInt32 Bytes.LE) (BD.signedInt32 Bytes.LE)
 
 
-{-| `Codec` between a 32-bit float and an Elm `Float`.
-Due to Elm `Float`s being 64-bit, encoding and decoding it as a 32-bit float won't exactly equal the original value.
+{-| Due to Elm`Float\`s being 64-bit, encoding and decoding it as a 32-bit float won't be exactly equal to the original value.
 -}
 f32 : Codec Float
 f32 =
     build (BE.float32 Bytes.LE) (BD.float32 Bytes.LE)
 
 
-{-| `Codec` between a 64-bit float and an Elm `Float`
--}
+{-| -}
 f64 : Codec Float
 f64 =
     build (BE.float64 Bytes.LE) (BD.float64 Bytes.LE)
 
 
-{-| `Codec` between a sequence of bytes and an Elm `Bool`
+{-| A boolean value, either true or false, encoded as a u8 type with a value of one or zero, respectively representing true or false.
+
+If a value other than one or zero is found in the u8 representation of the bool, the message is considered invalid.
+
 -}
 bool : Codec Bool
 bool =
@@ -347,7 +378,12 @@ bool =
         )
 
 
-{-| A value from a set of possible values enumerated in advance, encoded as a uint.
+{-| An unsigned integer value from a set of possible values agreed upon in advance, encoded with the uint type.
+
+An enum whose uint value is not a member of the values agreed upon in advance is considered invalid.
+
+Note that this makes the enum type unsuitable for representing a several enum values which have been combined with a bitwise OR operation.
+
 -}
 enum : List a -> Codec a
 enum values =
@@ -397,7 +433,10 @@ getAt idx xs =
         List.head <| List.drop idx xs
 
 
-{-| `Codec` between a sequence of bytes and an Elm `String`
+{-| A string of text. The length of the text in octets is encoded first as a uint, followed by the text data represented with the UTF-8 encoding.
+
+If the data is found to contain invalid UTF-8 sequences, it is considered invalid.
+
 -}
 string : Codec String
 string =
@@ -411,18 +450,29 @@ string =
         (uintDecoder |> BD.andThen (\charCount -> BD.string charCount))
 
 
-{-| Arbitrary binary data with a fixed "length" in bytes, e.g.
-`fixedLengthData 16`.
+{-| A single `Char`. It is encoded as a string.
 -}
-fixedLengthData : Int -> Codec Bytes
-fixedLengthData length =
+char : Codec Char
+char =
+    build
+        (String.fromChar >> encoder string)
+        (decoder string
+            |> BD.andThen
+                (String.toList >> List.head >> Maybe.map BD.succeed >> Maybe.withDefault BD.fail)
+        )
+
+
+{-| Arbitrary data with a fixed "length" in octets, e.g. `dataWithLength 16`. The data is encoded literally in the message.
+-}
+dataWithLength : Int -> Codec Bytes
+dataWithLength length =
     Codec
         { encoder = BE.bytes
         , decoder = BD.bytes length
         }
 
 
-{-| Arbitrary binary data of an undefined length.
+{-| Arbitrary data of a variable length in octets. The length is encoded first as a uint, followed by the data itself encoded literally.
 -}
 data : Codec Bytes
 data =
@@ -437,28 +487,26 @@ data =
         }
 
 
-{-| Synonym of `data`
+{-| A type with zero length. It is not encoded into BARE messages.
 -}
-bytes : Codec Bytes
-bytes =
-    data
-
-
-{-| A type with zero length.
--}
-void : Codec {}
+void : Codec ()
 void =
     build
         (\_ -> BE.sequence [])
-        (BD.succeed {})
+        (BD.succeed ())
 
 
 
 -- Aggregate types
 
 
-maybe : Codec a -> Codec (Maybe a)
-maybe codec =
+{-| A value which may or may not be present. Represented as either a u8 with a value of zero, indicating that the optional value is unset; or a u8 with a value of one, followed by the encoded data of the optional type.
+
+An optional value whose initial u8 is set to a number other than zero or one is considered invalid.
+
+-}
+optional : Codec a -> Codec (Maybe a)
+optional codec =
     build
         (\value ->
             case value of
@@ -484,16 +532,16 @@ maybe codec =
         )
 
 
-{-| An array of values with a fixed "length", e.g. [8]string.
+{-| A list of values of an uniform type, with a fixed length. The length is not encoded into the message. The encoded values of each member of the list are concatenated to form the encoded list.
 -}
-fixedLengthList : Int -> Codec a -> Codec (List a)
-fixedLengthList length codec =
+listWithLength : Int -> Codec a -> Codec (List a)
+listWithLength length codec =
     build
         (BE.sequence << List.map (encoder codec))
         (BD.loop ( length, [] ) (listStep (decoder codec)) |> BD.map List.reverse)
 
 
-{-| `Codec` between a sequence of bytes and an Elm `List`.
+{-| A variable-length list of values of an uniform type. The length of the list (in values) is encoded as a uint, followed by the encoded values of each member of the list concatenated.
 -}
 list : Codec a -> Codec (List a)
 list codec =
@@ -515,37 +563,28 @@ listStep decoder_ ( n, xs ) =
         BD.map (\x -> BD.Loop ( n - 1, x :: xs )) decoder_
 
 
-{-| An array of values with a fixed "length", e.g. [8]string.
+{-| An array of values of an uniform type, with a fixed length. The length is not encoded into the message. The encoded values of each member of the array are concatenated to form the encoded array.
 -}
-fixedLengthArray : Int -> Codec a -> Codec (Array a)
-fixedLengthArray length codec =
-    fixedLengthList length codec |> map Array.fromList Array.toList
+arrayWithLength : Int -> Codec a -> Codec (Array a)
+arrayWithLength length codec =
+    listWithLength length codec |> map Array.fromList Array.toList
 
 
-{-| `Codec` between a sequence of bytes and an Elm `Array`.
+{-| A variable-length array of values of an uniform type. The length of the array (in values) is encoded as a uint, followed by the encoded values of each member of the array concatenated.
 -}
 array : Codec a -> Codec (Array a)
 array codec =
     list codec |> map Array.fromList Array.toList
 
 
-{-| A set of values with a fixed "length", e.g. [8]string.
--}
-fixedLengthSet : Int -> Codec comparable -> Codec (Set comparable)
-fixedLengthSet length codec =
-    fixedLengthList length codec |> map Set.fromList Set.toList
-
-
-{-| `Codec` between a sequence of bytes and an Elm `Set`.
+{-| A variable-length set of values of an uniform type. The length of the set (in values) is encoded as a uint, followed by the encoded values of each member of the set concatenated.
 -}
 set : Codec comparable -> Codec (Set comparable)
 set codec =
     list codec |> map Set.fromList Set.toList
 
 
-{-| A map of values of type B keyed by values of type A, e.g. map[u32]string.
-
-The order of items is undefined.
+{-| An associative list of values of type `a` keyed by values of type `comparable`, e.g. `dict u32 string`. The encoded representation of a map begins with the number of key/value pairs as a uint, followed by the encoded key/value pairs concatenated. Each key/value pair is encoded as the encoded key concatenated with the encoded value.
 
 This is not called `map` to avoid clashing with the common usage of the term in Elm.
 
@@ -555,42 +594,6 @@ dict keyCodec valueCodec =
     list (tuple keyCodec valueCodec) |> map Dict.fromList Dict.toList
 
 
-
-{-
-   # Aggregate types
-
-   @docs taggedUnion, taggedUnionMember, buildTaggedUnion
-   @docs custom, variant0, variant1, variant2, variant3, variant4, variant5, variant6, variant7, variant8, buildCustom
-   @docs struct, structField, buildStruct
-   @docs object, field, buildObject
-
-
-   # Mapping
-
-   @docs map, andThen
-
-
-   # Fancy Codecs
-
-   @docs lazy, recursive
-
--}
-
-
-{-| `Codec` between a sequence of bytes and an Elm `Char`
--}
-char : Codec Char
-char =
-    build
-        (String.fromChar >> encoder string)
-        (decoder string
-            |> BD.andThen
-                (String.toList >> List.head >> Maybe.map BD.succeed >> Maybe.withDefault BD.fail)
-        )
-
-
-{-| `Codec` between a sequence of bytes and an Elm `Tuple`.
--}
 tuple : Codec a -> Codec b -> Codec ( a, b )
 tuple m1 m2 =
     Codec
@@ -602,123 +605,32 @@ tuple m1 m2 =
                     ]
         , decoder =
             BD.map2
-                (\a b -> ( a, b ))
+                Tuple.pair
                 (decoder m1)
                 (decoder m2)
         }
 
 
-{-| `Codec` between a sequence of bytes and an Elm triple.
+
+-- TAGGED UNION
+
+
+{-| A partially built `Codec` for a tagged union (called a custom type in Elm).
 -}
-triple : Codec a -> Codec b -> Codec c -> Codec ( a, b, c )
-triple m1 m2 m3 =
-    Codec
-        { encoder =
-            \( v1, v2, v3 ) ->
-                BE.sequence
-                    [ encoder m1 v1
-                    , encoder m2 v2
-                    , encoder m3 v3
-                    ]
-        , decoder =
-            BD.map3
-                (\a b c -> ( a, b, c ))
-                (decoder m1)
-                (decoder m2)
-                (decoder m3)
-        }
-
-
-{-| `Codec` for `Result` values.
--}
-result : Codec error -> Codec value -> Codec (Result error value)
-result errorCodec valueCodec =
-    custom
-        (\ferr fok value ->
-            case value of
-                Err err ->
-                    ferr err
-
-                Ok ok ->
-                    fok ok
-        )
-        |> variant1 0 Err errorCodec
-        |> variant1 1 Ok valueCodec
-        |> buildCustom
-
-
-
--- OBJECTS
-
-
-{-| A partially built `Codec` for an object.
--}
-type ObjectCodec a b
-    = ObjectCodec
-        { encoder : a -> List Encoder
-        , decoder : Decoder b
-        }
-
-
-{-| Start creating a `Codec` for an object. You should pass the main constructor as argument.
-If you don't have one (for example it's a simple type with no name), you should pass a function that given the field values builds an object.
-
-    type alias Point =
-        { x : Int
-        , y : Int
-        }
-
-    pointCodec : Codec Point
-    pointCodec =
-        Codec.object Point
-            |> Codec.field .x Codec.signedInt
-            |> Codec.field .y Codec.signedInt
-            |> Codec.buildObject
-
--}
-object : b -> ObjectCodec a b
-object ctor =
-    ObjectCodec
-        { encoder = \_ -> []
-        , decoder = BD.succeed ctor
-        }
-
-
-{-| Specify how to get a value from the object we want to encode and then give a `Codec` for that value.
--}
-field : (a -> f) -> Codec f -> ObjectCodec a (f -> b) -> ObjectCodec a b
-field getter codec (ObjectCodec ocodec) =
-    ObjectCodec
-        { encoder = \v -> (encoder codec <| getter v) :: ocodec.encoder v
-        , decoder = BD.map2 (\f x -> f x) ocodec.decoder (decoder codec)
-        }
-
-
-{-| Create a `Codec` from a fully specified `ObjectCodec`.
--}
-buildObject : ObjectCodec a a -> Codec a
-buildObject (ObjectCodec om) =
-    Codec
-        { encoder = om.encoder >> List.reverse >> BE.sequence
-        , decoder = om.decoder
-        }
-
-
-
--- CUSTOM
-
-
-{-| A partially built `Codec` for a custom type.
--}
-type CustomCodec match v
-    = CustomCodec
+type TaggedUnionCodec match v
+    = TaggedUnionCodec
         { match : match
         , decoder : Int -> Decoder v -> Decoder v
         , idCodec : Codec Int
         }
 
 
-{-| Starts building a `Codec` for a custom type.
+{-| Starts building a `Codec` for a tagged union.
+
+A tagged union is a value that can be one of any type from a set. Each type in the set is assigned a numeric representation, starting at zero and incrementing for each type. The value is encoded as the selected tag as a uint, followed by the value itself encoded as that type.
+
+`elm-bare` allows you to map this directly to Elm custom types. For easier interoperability with other languages you should restrict yourself to `variant0` and `variant1` (using `struct` to simulate multiple arguments).
+
 You need to pass a pattern matching function, see the FAQ for details.
 
     type Semaphore
@@ -728,7 +640,7 @@ You need to pass a pattern matching function, see the FAQ for details.
 
     semaphoreCodec : Codec Semaphore
     semaphoreCodec =
-        Codec.custom
+        Codec.taggedUnion
             (\redEncoder yellowEncoder greenEncoder value ->
                 case value of
                     Red i s b ->
@@ -743,21 +655,25 @@ You need to pass a pattern matching function, see the FAQ for details.
             |> Codec.variant3 0 Red Codec.signedInt Codec.string Codec.bool
             |> Codec.variant1 1 Yellow Codec.float64
             |> Codec.variant0 2 Green
-            |> Codec.buildCustom
+            |> Codec.buildTaggedUnion
 
 -}
-custom : match -> CustomCodec match value
-custom match =
-    customWithIdCodec int match
+taggedUnion : match -> TaggedUnionCodec match value
+taggedUnion match =
+    TaggedUnionCodec
+        { match = match
+        , decoder = \_ -> identity
+        , idCodec = uint
+        }
 
 
 variant :
     Int
     -> ((List Encoder -> Encoder) -> a)
     -> Decoder v
-    -> CustomCodec (a -> b) v
-    -> CustomCodec b v
-variant name matchPiece decoderPiece (CustomCodec am) =
+    -> TaggedUnionCodec (a -> b) v
+    -> TaggedUnionCodec b v
+variant name matchPiece decoderPiece (TaggedUnionCodec am) =
     let
         enc v =
             encoder am.idCodec name
@@ -771,34 +687,34 @@ variant name matchPiece decoderPiece (CustomCodec am) =
             else
                 am.decoder tag orElse
     in
-    CustomCodec
+    TaggedUnionCodec
         { match = am.match <| matchPiece enc
         , decoder = decoder_
         , idCodec = am.idCodec
         }
 
 
-{-| Define a variant with 0 parameters for a custom type.
+{-| Define a variant with 0 parameters for a tagged union.
 -}
 variant0 :
     Int
     -> v
-    -> CustomCodec (Encoder -> a) v
-    -> CustomCodec a v
+    -> TaggedUnionCodec (Encoder -> a) v
+    -> TaggedUnionCodec a v
 variant0 name ctor =
     variant name
         (\c -> c [])
         (BD.succeed ctor)
 
 
-{-| Define a variant with 1 parameters for a custom type.
+{-| Define a variant with 1 parameters for a tagged union.
 -}
 variant1 :
     Int
     -> (a -> v)
     -> Codec a
-    -> CustomCodec ((a -> Encoder) -> b) v
-    -> CustomCodec b v
+    -> TaggedUnionCodec ((a -> Encoder) -> b) v
+    -> TaggedUnionCodec b v
 variant1 name ctor m1 =
     variant name
         (\c v ->
@@ -811,15 +727,15 @@ variant1 name ctor m1 =
         )
 
 
-{-| Define a variant with 2 parameters for a custom type.
+{-| Define a variant with 2 parameters for a tagged union.
 -}
 variant2 :
     Int
     -> (a -> b -> v)
     -> Codec a
     -> Codec b
-    -> CustomCodec ((a -> b -> Encoder) -> c) v
-    -> CustomCodec c v
+    -> TaggedUnionCodec ((a -> b -> Encoder) -> c) v
+    -> TaggedUnionCodec c v
 variant2 id ctor m1 m2 =
     variant id
         (\c v1 v2 ->
@@ -834,7 +750,7 @@ variant2 id ctor m1 m2 =
         )
 
 
-{-| Define a variant with 3 parameters for a custom type.
+{-| Define a variant with 3 parameters for a tagged union.
 -}
 variant3 :
     Int
@@ -842,8 +758,8 @@ variant3 :
     -> Codec a
     -> Codec b
     -> Codec c
-    -> CustomCodec ((a -> b -> c -> Encoder) -> partial) v
-    -> CustomCodec partial v
+    -> TaggedUnionCodec ((a -> b -> c -> Encoder) -> partial) v
+    -> TaggedUnionCodec partial v
 variant3 id ctor m1 m2 m3 =
     variant id
         (\c v1 v2 v3 ->
@@ -860,7 +776,7 @@ variant3 id ctor m1 m2 m3 =
         )
 
 
-{-| Define a variant with 4 parameters for a custom type.
+{-| Define a variant with 4 parameters for a tagged union.
 -}
 variant4 :
     Int
@@ -869,8 +785,8 @@ variant4 :
     -> Codec b
     -> Codec c
     -> Codec d
-    -> CustomCodec ((a -> b -> c -> d -> Encoder) -> partial) v
-    -> CustomCodec partial v
+    -> TaggedUnionCodec ((a -> b -> c -> d -> Encoder) -> partial) v
+    -> TaggedUnionCodec partial v
 variant4 id ctor m1 m2 m3 m4 =
     variant id
         (\c v1 v2 v3 v4 ->
@@ -889,7 +805,7 @@ variant4 id ctor m1 m2 m3 m4 =
         )
 
 
-{-| Define a variant with 5 parameters for a custom type.
+{-| Define a variant with 5 parameters for a tagged union.
 -}
 variant5 :
     Int
@@ -899,8 +815,8 @@ variant5 :
     -> Codec c
     -> Codec d
     -> Codec e
-    -> CustomCodec ((a -> b -> c -> d -> e -> Encoder) -> partial) v
-    -> CustomCodec partial v
+    -> TaggedUnionCodec ((a -> b -> c -> d -> e -> Encoder) -> partial) v
+    -> TaggedUnionCodec partial v
 variant5 id ctor m1 m2 m3 m4 m5 =
     variant id
         (\c v1 v2 v3 v4 v5 ->
@@ -921,7 +837,7 @@ variant5 id ctor m1 m2 m3 m4 m5 =
         )
 
 
-{-| Define a variant with 6 parameters for a custom type.
+{-| Define a variant with 6 parameters for a tagged union.
 -}
 variant6 :
     Int
@@ -932,8 +848,8 @@ variant6 :
     -> Codec d
     -> Codec e
     -> Codec f
-    -> CustomCodec ((a -> b -> c -> d -> e -> f -> Encoder) -> partial) v
-    -> CustomCodec partial v
+    -> TaggedUnionCodec ((a -> b -> c -> d -> e -> f -> Encoder) -> partial) v
+    -> TaggedUnionCodec partial v
 variant6 id ctor m1 m2 m3 m4 m5 m6 =
     variant id
         (\c v1 v2 v3 v4 v5 v6 ->
@@ -958,7 +874,7 @@ variant6 id ctor m1 m2 m3 m4 m5 m6 =
         )
 
 
-{-| Define a variant with 7 parameters for a custom type.
+{-| Define a variant with 7 parameters for a tagged union.
 -}
 variant7 :
     Int
@@ -970,8 +886,8 @@ variant7 :
     -> Codec e
     -> Codec f
     -> Codec g
-    -> CustomCodec ((a -> b -> c -> d -> e -> f -> g -> Encoder) -> partial) v
-    -> CustomCodec partial v
+    -> TaggedUnionCodec ((a -> b -> c -> d -> e -> f -> g -> Encoder) -> partial) v
+    -> TaggedUnionCodec partial v
 variant7 id ctor m1 m2 m3 m4 m5 m6 m7 =
     variant id
         (\c v1 v2 v3 v4 v5 v6 v7 ->
@@ -1000,7 +916,7 @@ variant7 id ctor m1 m2 m3 m4 m5 m6 m7 =
         )
 
 
-{-| Define a variant with 8 parameters for a custom type.
+{-| Define a variant with 8 parameters for a tagged union.
 -}
 variant8 :
     Int
@@ -1013,8 +929,8 @@ variant8 :
     -> Codec f
     -> Codec g
     -> Codec h
-    -> CustomCodec ((a -> b -> c -> d -> e -> f -> g -> h -> Encoder) -> partial) v
-    -> CustomCodec partial v
+    -> TaggedUnionCodec ((a -> b -> c -> d -> e -> f -> g -> h -> Encoder) -> partial) v
+    -> TaggedUnionCodec partial v
 variant8 id ctor m1 m2 m3 m4 m5 m6 m7 m8 =
     variant id
         (\c v1 v2 v3 v4 v5 v6 v7 v8 ->
@@ -1047,10 +963,10 @@ variant8 id ctor m1 m2 m3 m4 m5 m6 m7 m8 =
         )
 
 
-{-| Build a `Codec` for a fully specified custom type.
+{-| Build a `Codec` for a fully specified tagged union.
 -}
-buildCustom : CustomCodec (a -> Encoder) a -> Codec a
-buildCustom (CustomCodec am) =
+buildTaggedUnion : TaggedUnionCodec (a -> Encoder) a -> Codec a
+buildTaggedUnion (TaggedUnionCodec am) =
     Codec
         { encoder = \v -> am.match v
         , decoder =
@@ -1059,6 +975,66 @@ buildCustom (CustomCodec am) =
                     (\tag ->
                         am.decoder tag BD.fail
                     )
+        }
+
+
+
+-- STRUCTS
+
+
+{-| A partially built `Codec` for a struct (called an object in Elm).
+-}
+type StructCodec a b
+    = StructCodec
+        { encoder : a -> List Encoder
+        , decoder : Decoder b
+        }
+
+
+{-| Start creating a `Codec` for a struct. You should pass the main constructor as argument.
+
+A struct is a set of values of arbitrary types, concatenated together in an order known in advance.
+
+If you don't have one (for example it's a simple type with no name), you should pass a function that given the field values builds an object.
+
+    type alias Point =
+        { x : Int
+        , y : Int
+        }
+
+    pointCodec : Codec Point
+    pointCodec =
+        Codec.struct Point
+            |> Codec.field .x Codec.signedInt
+            |> Codec.field .y Codec.signedInt
+            |> Codec.buildStruct
+
+-}
+struct : b -> StructCodec a b
+struct ctor =
+    StructCodec
+        { encoder = \_ -> []
+        , decoder = BD.succeed ctor
+        }
+
+
+{-| Specify how to get a value from the struct we want to encode and then give a `Codec` for that value.
+-}
+field : (a -> f) -> Codec f -> StructCodec a (f -> b) -> StructCodec a b
+field getter codec (StructCodec ocodec) =
+    StructCodec
+        { encoder = \v -> (encoder codec <| getter v) :: ocodec.encoder v
+        , decoder = BD.map2 (\f x -> f x) ocodec.decoder (decoder codec)
+        }
+
+
+{-| Create a `Codec` from a fully specified `StructCodec`.
+-}
+buildStruct : StructCodec a a -> Codec a
+buildStruct (StructCodec om) =
+    Codec
+        { encoder = om.encoder >> List.reverse >> BE.sequence
+        , decoder = om.decoder
         }
 
 
@@ -1161,26 +1137,4 @@ lazy f =
     Codec
         { decoder = BD.succeed () |> BD.andThen (\() -> decoder (f ()))
         , encoder = \value -> encoder (f ()) value
-        }
-
-
-{-| Same as `custom` but here we can choose what codec to use for the integer id we tell apart variants with.
-This is useful if, for example, you know you won't have ids outside of the range 0 - 255 and can use unsignedInt8 instead of the default signedInt32 to save some space.
--}
-customWithIdCodec : Codec Int -> match -> CustomCodec match value
-customWithIdCodec idCodec match =
-    CustomCodec
-        { match = match
-        , decoder = \_ -> identity
-        , idCodec = idCodec
-        }
-
-
-{-| Create a `Codec` that encodes nothing and always decodes as the same value.
--}
-constant : a -> Codec a
-constant default_ =
-    Codec
-        { decoder = BD.succeed default_
-        , encoder = \_ -> BE.sequence []
         }

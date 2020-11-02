@@ -23,13 +23,13 @@ peanoCodec =
 One is used for the encoder, the other for the decoder
 
 ## How do I build `Codec`s for custom types?
-You start building with `custom` which needs the pattern matcher for your type as an argument.
+You start building with `taggedUnion` which needs the pattern matcher for your type as an argument.
 
 The pattern matcher is just the most generic `case ... of` possible for your type.
 
 You then chain `variantX` calls for every alternative (in the same order as the pattern matcher).
 
-You end with a call to `buildCustom`.
+You end with a call to `buildTaggedUnion`.
 
 An example:
 
@@ -43,7 +43,7 @@ type Semaphore
 
 semaphoreCodec : Codec Semaphore
 semaphoreCodec =
-    Codec.custom
+    Codec.taggedUnion
         (\redEncoder yellowEncoder greenEncoder value ->
             case value of
                 Red i s b ->
@@ -55,13 +55,13 @@ semaphoreCodec =
                 Green ->
                     greenEncoder
         )
-        |> Codec.variant3 0 Red Codec.signedInt Codec.string Codec.bool
-        |> Codec.variant1 1 Yellow Codec.float64
+        |> Codec.variant3 0 Red Codec.int Codec.string Codec.bool
+        |> Codec.variant1 1 Yellow Codec.f64
         |> Codec.variant0 2 Green
-        |> Codec.buildCustom
+        |> Codec.buildTaggedUnion
 ```
 
-A second example combining `recursive` and `custom`:
+A second example combining `recursive` and `taggedUnion`:
 
 ```elm
 import Codec.Bare as Codec exposing (Codec)
@@ -83,17 +83,17 @@ treeCodec leafCodec =
                         Leaf x ->
                             leafEncoder x
             in
-            Codec.custom match
+            Codec.taggedUnion match
                 |> Codec.variant1 0 Node (Codec.list finishedCodec)
                 |> Codec.variant1 1 Leaf leafCodec
-                |> Codec.buildCustom
+                |> Codec.buildTaggedUnion
         )
 ```
 
 ## If there's no `oneOf` or `optionalField`, how is versioning done?
 If you want your `Codec`s to evolve over time and still be able to decode old 
 encoded data, the recommended approach is to treat the different versions as a custom type.
-Then you can write a `custom` Codec for those possible versions and use `map` to convert it to the data structure used within your app.
+Then you can write a `taggedUnion` Codec for those possible versions and use `map` to convert it to the data structure used within your app.
 
 An example:
 ```elm
@@ -116,7 +116,7 @@ gpsV2Codec =
 
 gpsCodec : Codec GpsCoordinate
 gpsCodec =
-    Codec.custom
+    Codec.taggedUnion
         (\gpsV1Encoder gpsV2Encoder value ->
             case value of
                 GpsV1 text ->
@@ -127,7 +127,7 @@ gpsCodec =
         )
         |> Codec.variant1 1 GpsV1 gpsV1Codec
         |> Codec.variant1 2 GpsV2 gpsV2Codec
-        |> Codec.buildCustom
+        |> Codec.buildTaggedUnion
         |> Codec.map
             (\value ->
                 case value of
