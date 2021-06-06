@@ -8,7 +8,7 @@ module Codec.Bare exposing
     , i8, i16, i32
     , f32, f64
     , bool
-    , enum
+    , enum, enumWithValues
     , string, char
     , dataWithLength, data
     , void
@@ -94,7 +94,7 @@ Floating-point numbers represented with the IEEE 754 binary32 and binary64 float
 ## Others
 
 @docs bool
-@docs enum
+@docs enum, enumWithValues
 @docs string, char
 @docs dataWithLength, data
 @docs void
@@ -382,7 +382,7 @@ bool =
 
 An enum whose uint value is not a member of the values agreed upon in advance is considered invalid.
 
-Note that this makes the enum type unsuitable for representing a several enum values which have been combined with a bitwise OR operation.
+Note that this makes the enum type unsuitable for representing several enum values which have been combined with a bitwise OR operation.
 
 -}
 enum : List a -> Codec a
@@ -401,6 +401,39 @@ enum values =
                             BD.succeed r
 
                         Nothing ->
+                            BD.fail
+                )
+        )
+
+
+{-| An unsigned integer value from a set of possible values agreed upon in advance, encoded with the uint type.
+
+This version allows you to specify how values will be encoded.
+
+An enum whose uint value is not a member of the values agreed upon in advance is considered invalid.
+
+Note that this makes the enum type unsuitable for representing several enum values which have been combined with a bitwise OR operation.
+
+-}
+enumWithValues : List ( a, Int ) -> Codec a
+enumWithValues values =
+    build
+        (\value ->
+            case List.filter (Tuple.first >> (==) value) values of
+                [] ->
+                    uintEncoder (List.length values)
+
+                ( _, v ) :: _ ->
+                    uintEncoder v
+        )
+        (uintDecoder
+            |> BD.andThen
+                (\i ->
+                    case List.filter (Tuple.second >> (==) i) values of
+                        ( v, _ ) :: _ ->
+                            BD.succeed v
+
+                        [] ->
                             BD.fail
                 )
         )
