@@ -21,6 +21,9 @@ decode s =
     Codec.decodeValue codec s
 ```
 
+## Generator
+The generator can be found at https://github.com/miniBill/elm-bare-generator
+
 ## Learning Resources
 
 Ask for help on the [Elm Slack](https://elmlang.herokuapp.com/).
