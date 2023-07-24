@@ -22,7 +22,7 @@ decode s =
 ```
 
 ## Generator
-The generator can be found at https://github.com/miniBill/elm-bare-generator
+The generator can be found at https://github.com/nilshelmig/elm-bare-generator
 
 ## Learning Resources
 
